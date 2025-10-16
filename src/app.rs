@@ -776,6 +776,20 @@ impl App {
         }
     }
 
+    fn get_rainbow_color(&self, depth: usize) -> ratatui::style::Color {
+        // Rainbow colors for different bracket depths
+        let colors = [
+            ratatui::style::Color::Rgb(255, 100, 100),  // Red
+            ratatui::style::Color::Rgb(255, 200, 100),  // Orange
+            ratatui::style::Color::Rgb(255, 255, 100),  // Yellow
+            ratatui::style::Color::Rgb(100, 255, 100),  // Green
+            ratatui::style::Color::Rgb(100, 200, 255),  // Blue
+            ratatui::style::Color::Rgb(200, 100, 255),  // Purple
+            ratatui::style::Color::Rgb(255, 100, 200),  // Pink
+        ];
+        colors[depth % colors.len()]
+    }
+
     fn draw_editor(&mut self, frame: &mut Frame, area: Rect) {
         let theme = self.theme_manager.get_current_theme();
         let viewport_height = area.height as usize;
@@ -803,8 +817,16 @@ impl App {
                 ));
             }
 
-            let cursor_row = self.buffer_manager.current().cursor_position.0;
+            let cursor_pos = self.buffer_manager.current().cursor_position;
+            let cursor_row = cursor_pos.0;
             let is_current_line = self.viewport_offset + i == cursor_row;
+
+            // Check for matching bracket at cursor position
+            let matching_bracket = if cursor_row == self.viewport_offset + i && self.config.editor.highlight_matching_bracket {
+                self.buffer_manager.current().find_matching_bracket(cursor_pos)
+            } else {
+                None
+            };
 
             // Build spans character by character to handle selection
             let row = self.viewport_offset + i;
@@ -814,12 +836,34 @@ impl App {
             if self.buffer_manager.current().selection.is_some() {
                 for ch in line.chars() {
                     let is_selected = self.buffer_manager.current().is_position_selected(row, col);
+                    let is_bracket = matches!(ch, '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>');
                     let mut style = get_ui_style(theme, "foreground");
+
+                    // Check if this position matches the bracket under cursor or its match
+                    let is_matching_bracket = matching_bracket
+                        .map_or(false, |(match_row, match_col)|
+                            match_row == row && match_col == col
+                        );
+                    let is_cursor_bracket = cursor_row == row && cursor_pos.1 == col;
+
+                    if is_bracket && self.config.editor.rainbow_brackets && !is_selected {
+                        // Get bracket depth for rainbow coloring
+                        let depth = self.buffer_manager.current().get_bracket_depth_at((row, col));
+                        style = style.fg(self.get_rainbow_color(depth));
+
+                        // Highlight matching brackets
+                        if is_matching_bracket || is_cursor_bracket {
+                            style = style.bg(ratatui::style::Color::Rgb(80, 80, 80))
+                                .add_modifier(ratatui::style::Modifier::BOLD);
+                        }
+                    }
 
                     if is_selected {
                         style = style.bg(hex_to_color(&theme.ui.selection));
                     } else if is_current_line && self.config.editor.highlight_current_line {
-                        style = style.bg(hex_to_color(&theme.ui.current_line));
+                        if !is_matching_bracket && !is_cursor_bracket {
+                            style = style.bg(hex_to_color(&theme.ui.current_line));
+                        }
                     }
 
                     spans.push(Span::styled(ch.to_string(), style));
@@ -829,20 +873,47 @@ impl App {
                 // Apply syntax highlighting if available and no selection
                 if let Some(syntax) = syntax {
                     if let Ok(highlighted) = self.syntax_highlighter.highlight_line(line, syntax) {
+                        let mut current_col = 0;
                         for (style, text) in highlighted {
-                            let mut ratatui_style = Style::default();
+                            for ch in text.chars() {
+                                let is_bracket = matches!(ch, '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>');
+                                let mut ratatui_style = Style::default();
 
-                            ratatui_style = ratatui_style.fg(ratatui::style::Color::Rgb(
-                                style.foreground.r,
-                                style.foreground.g,
-                                style.foreground.b,
-                            ));
+                                // Check if this position matches the bracket under cursor or its match
+                                let is_matching_bracket = matching_bracket
+                                    .map_or(false, |(match_row, match_col)|
+                                        match_row == row && match_col == current_col
+                                    );
+                                let is_cursor_bracket = cursor_row == row && cursor_pos.1 == current_col;
 
-                            if is_current_line && self.config.editor.highlight_current_line {
-                                ratatui_style = ratatui_style.bg(hex_to_color(&theme.ui.current_line));
+                                if is_bracket && self.config.editor.rainbow_brackets {
+                                    // Get bracket depth for rainbow coloring
+                                    let depth = self.buffer_manager.current().get_bracket_depth_at((row, current_col));
+                                    ratatui_style = ratatui_style.fg(self.get_rainbow_color(depth));
+
+                                    // Highlight matching brackets
+                                    if is_matching_bracket || is_cursor_bracket {
+                                        ratatui_style = ratatui_style.bg(ratatui::style::Color::Rgb(80, 80, 80))
+                                            .add_modifier(ratatui::style::Modifier::BOLD);
+                                    }
+                                } else {
+                                    // Normal syntax highlighting
+                                    ratatui_style = ratatui_style.fg(ratatui::style::Color::Rgb(
+                                        style.foreground.r,
+                                        style.foreground.g,
+                                        style.foreground.b,
+                                    ));
+                                }
+
+                                if is_current_line && self.config.editor.highlight_current_line {
+                                    if !is_matching_bracket && !is_cursor_bracket {
+                                        ratatui_style = ratatui_style.bg(hex_to_color(&theme.ui.current_line));
+                                    }
+                                }
+
+                                spans.push(Span::styled(ch.to_string(), ratatui_style));
+                                current_col += 1;
                             }
-
-                            spans.push(Span::styled(text, ratatui_style));
                         }
                     } else {
                         // Fallback if highlighting fails
@@ -859,17 +930,38 @@ impl App {
                         }
                     }
                 } else {
-                    // No syntax highlighting available
-                    if is_current_line && self.config.editor.highlight_current_line {
-                        spans.push(Span::styled(
-                            line.clone(),
-                            get_ui_style(theme, "current_line"),
-                        ));
-                    } else {
-                        spans.push(Span::styled(
-                            line.clone(),
-                            get_ui_style(theme, "foreground"),
-                        ));
+                    // No syntax highlighting available - still handle brackets
+                    for ch in line.chars() {
+                        let is_bracket = matches!(ch, '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>');
+                        let mut style = get_ui_style(theme, "foreground");
+
+                        // Check if this position matches the bracket under cursor or its match
+                        let is_matching_bracket = matching_bracket
+                            .map_or(false, |(match_row, match_col)|
+                                match_row == row && match_col == col
+                            );
+                        let is_cursor_bracket = cursor_row == row && cursor_pos.1 == col;
+
+                        if is_bracket && self.config.editor.rainbow_brackets {
+                            // Get bracket depth for rainbow coloring
+                            let depth = self.buffer_manager.current().get_bracket_depth_at((row, col));
+                            style = style.fg(self.get_rainbow_color(depth));
+
+                            // Highlight matching brackets
+                            if is_matching_bracket || is_cursor_bracket {
+                                style = style.bg(ratatui::style::Color::Rgb(80, 80, 80))
+                                    .add_modifier(ratatui::style::Modifier::BOLD);
+                            }
+                        }
+
+                        if is_current_line && self.config.editor.highlight_current_line {
+                            if !is_matching_bracket && !is_cursor_bracket {
+                                style = style.bg(hex_to_color(&theme.ui.current_line));
+                            }
+                        }
+
+                        spans.push(Span::styled(ch.to_string(), style));
+                        col += 1;
                     }
                 }
             }

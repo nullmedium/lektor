@@ -447,4 +447,164 @@ impl TextBuffer {
     pub fn get_selection_lines(&self) -> Option<(usize, usize)> {
         self.selection.as_ref().map(|s| (s.start.0, s.end.0))
     }
+
+    pub fn find_matching_bracket(&self, pos: (usize, usize)) -> Option<(usize, usize)> {
+        let line = self.get_line(pos.0);
+        if pos.1 >= line.len() {
+            return None;
+        }
+
+        let ch = line.chars().nth(pos.1)?;
+        let (open_bracket, close_bracket, search_forward) = match ch {
+            '(' => ('(', ')', true),
+            ')' => ('(', ')', false),
+            '[' => ('[', ']', true),
+            ']' => ('[', ']', false),
+            '{' => ('{', '}', true),
+            '}' => ('{', '}', false),
+            '<' => ('<', '>', true),
+            '>' => ('<', '>', false),
+            _ => return None,
+        };
+
+        let mut depth = 1;
+        let mut current_row = pos.0;
+        let mut current_col = pos.1;
+
+        if search_forward {
+            // Search forward for closing bracket
+            current_col += 1;
+
+            while current_row < self.line_count() {
+                let line = self.get_line(current_row);
+                let chars: Vec<char> = line.chars().collect();
+
+                while current_col < chars.len() {
+                    if chars[current_col] == open_bracket {
+                        depth += 1;
+                    } else if chars[current_col] == close_bracket {
+                        depth -= 1;
+                        if depth == 0 {
+                            return Some((current_row, current_col));
+                        }
+                    }
+                    current_col += 1;
+                }
+
+                current_row += 1;
+                current_col = 0;
+            }
+        } else {
+            // Search backward for opening bracket
+            if current_col > 0 {
+                current_col -= 1;
+            } else if current_row > 0 {
+                current_row -= 1;
+                let line = self.get_line(current_row);
+                current_col = line.len().saturating_sub(1);
+            } else {
+                return None;
+            }
+
+            loop {
+                let line = self.get_line(current_row);
+                let chars: Vec<char> = line.chars().collect();
+
+                loop {
+                    if current_col < chars.len() {
+                        if chars[current_col] == close_bracket {
+                            depth += 1;
+                        } else if chars[current_col] == open_bracket {
+                            depth -= 1;
+                            if depth == 0 {
+                                return Some((current_row, current_col));
+                            }
+                        }
+                    }
+
+                    if current_col == 0 {
+                        break;
+                    }
+                    current_col -= 1;
+                }
+
+                if current_row == 0 {
+                    break;
+                }
+                current_row -= 1;
+                let line = self.get_line(current_row);
+                current_col = line.len().saturating_sub(1);
+            }
+        }
+
+        None
+    }
+
+    pub fn get_bracket_depth_at(&self, pos: (usize, usize)) -> usize {
+        let line = self.get_line(pos.0);
+        if pos.1 >= line.len() {
+            return 0;
+        }
+
+        let ch = match line.chars().nth(pos.1) {
+            Some(c) => c,
+            None => return 0,
+        };
+
+        // Check if it's a bracket
+        let is_opening = matches!(ch, '(' | '[' | '{' | '<');
+        let is_closing = matches!(ch, ')' | ']' | '}' | '>');
+
+        if !is_opening && !is_closing {
+            return 0;
+        }
+
+        let mut depth: usize = 0;
+        let brackets = vec![('(', ')'), ('[', ']'), ('{', '}')];
+
+        if is_opening {
+            // For opening brackets, count depth up to this position
+            for row in 0..=pos.0 {
+                let line = self.get_line(row);
+                let chars: Vec<char> = line.chars().collect();
+                let max_col = if row == pos.0 { pos.1 } else { chars.len() };
+
+                for col in 0..max_col {
+                    if col < chars.len() {
+                        for (open, close) in &brackets {
+                            if chars[col] == *open {
+                                depth += 1;
+                            } else if chars[col] == *close {
+                                depth = depth.saturating_sub(1);
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // For closing brackets, find the matching opening bracket's depth
+            if let Some(matching_pos) = self.find_matching_bracket(pos) {
+                // Count depth up to the matching opening bracket
+                for row in 0..=matching_pos.0 {
+                    let line = self.get_line(row);
+                    let chars: Vec<char> = line.chars().collect();
+                    let max_col = if row == matching_pos.0 { matching_pos.1 } else { chars.len() };
+
+                    for col in 0..max_col {
+                        if col < chars.len() {
+                            for (open, close) in &brackets {
+                                if chars[col] == *open {
+                                    depth += 1;
+                                } else if chars[col] == *close {
+                                    depth = depth.saturating_sub(1);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        depth
+    }
 }

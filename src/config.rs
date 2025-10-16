@@ -21,6 +21,8 @@ pub struct EditorConfig {
     pub word_wrap: bool,
     pub auto_save: bool,
     pub auto_save_interval: u64,
+    pub rainbow_brackets: bool,
+    pub highlight_matching_bracket: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +61,8 @@ impl Default for Config {
                 word_wrap: false,
                 auto_save: false,
                 auto_save_interval: 30,
+                rainbow_brackets: true,
+                highlight_matching_bracket: true,
             },
             theme: ThemeConfig {
                 name: String::from("default"),
