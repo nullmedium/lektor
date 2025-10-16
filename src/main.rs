@@ -1,5 +1,6 @@
 mod app;
 mod buffer;
+mod buffer_manager;
 mod config;
 mod sidebar;
 mod syntax;

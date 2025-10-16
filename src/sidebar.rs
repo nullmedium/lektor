@@ -4,6 +4,12 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SidebarMode {
+    Files,
+    Buffers,
+}
+
 #[derive(Debug, Clone)]
 pub struct FileEntry {
     pub path: PathBuf,
@@ -12,6 +18,9 @@ pub struct FileEntry {
     pub is_expanded: bool,
     pub git_status: Option<GitStatus>,
     pub level: usize,
+    pub is_buffer: bool,  // True if this is a buffer entry, not a file entry
+    pub buffer_index: Option<usize>,  // Index in the buffer manager
+    pub is_modified: bool,  // For buffer entries
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -33,6 +42,7 @@ pub struct Sidebar {
     pub show_hidden: bool,
     pub git_repo: Option<Repository>,
     pub git_statuses: HashMap<PathBuf, GitStatus>,
+    pub mode: SidebarMode,
 }
 
 impl Sidebar {
@@ -46,6 +56,7 @@ impl Sidebar {
             show_hidden: false,
             git_repo,
             git_statuses: HashMap::new(),
+            mode: SidebarMode::Files,
         };
 
         sidebar.update_git_statuses()?;
@@ -101,6 +112,23 @@ impl Sidebar {
     pub fn load_entries(&mut self, path: &Path, level: usize) -> Result<()> {
         let mut entries = Vec::new();
 
+        // Add parent directory entry ".." if we're at root level and not at filesystem root
+        if level == 0 && path.parent().is_some() {
+            if let Some(parent_path) = path.parent() {
+                entries.push(FileEntry {
+                    path: parent_path.to_path_buf(),
+                    name: "..".to_string(),
+                    is_dir: true,
+                    is_expanded: false,
+                    git_status: None,
+                    level: 0,
+                    is_buffer: false,
+                    buffer_index: None,
+                    is_modified: false,
+                });
+            }
+        }
+
         if path.is_dir() {
             let mut dir_entries: Vec<_> = fs::read_dir(path)?
                 .filter_map(|entry| entry.ok())
@@ -129,6 +157,9 @@ impl Sidebar {
                     is_expanded: false,
                     git_status,
                     level,
+                    is_buffer: false,
+                    buffer_index: None,
+                    is_modified: false,
                 });
             }
         }
@@ -156,6 +187,11 @@ impl Sidebar {
 
     pub fn toggle_expanded(&mut self) -> Result<()> {
         if let Some(entry) = self.entries.get_mut(self.selected_index) {
+            // Don't try to expand ".." parent directory entry
+            if entry.name == ".." {
+                return Ok(());
+            }
+
             if entry.is_dir {
                 entry.is_expanded = !entry.is_expanded;
 
@@ -202,6 +238,12 @@ impl Sidebar {
         self.entries.get(self.selected_index).map(|e| &e.path)
     }
 
+    pub fn is_parent_selected(&self) -> bool {
+        self.entries.get(self.selected_index)
+            .map(|e| e.name == "..")
+            .unwrap_or(false)
+    }
+
     pub fn toggle_hidden_files(&mut self) -> Result<()> {
         self.show_hidden = !self.show_hidden;
         self.refresh()?;
@@ -209,11 +251,22 @@ impl Sidebar {
     }
 
     pub fn refresh(&mut self) -> Result<()> {
-        self.entries.clear();
-        self.update_git_statuses()?;
-        let root_path = self.root_path.clone();
-        self.load_entries(&root_path, 0)?;
-        self.selected_index = 0;
+        if self.mode == SidebarMode::Files {
+            self.entries.clear();
+            self.update_git_statuses()?;
+            let root_path = self.root_path.clone();
+            self.load_entries(&root_path, 0)?;
+            self.selected_index = 0;
+        }
+        // For buffer mode, refresh should be called explicitly with load_buffer_list
+        Ok(())
+    }
+
+    pub fn navigate_to_parent(&mut self) -> Result<()> {
+        if let Some(parent) = self.root_path.parent() {
+            self.root_path = parent.to_path_buf();
+            self.refresh()?;
+        }
         Ok(())
     }
 
@@ -227,6 +280,46 @@ impl Sidebar {
             self.scroll_offset = self.selected_index;
         } else if self.selected_index >= self.scroll_offset + viewport_height {
             self.scroll_offset = self.selected_index.saturating_sub(viewport_height - 1);
+        }
+    }
+
+    pub fn toggle_mode(&mut self) {
+        self.mode = match self.mode {
+            SidebarMode::Files => SidebarMode::Buffers,
+            SidebarMode::Buffers => SidebarMode::Files,
+        };
+        self.selected_index = 0;
+        self.scroll_offset = 0;
+    }
+
+    pub fn load_buffer_list(&mut self, buffers: Vec<(usize, String, PathBuf, bool)>) {
+        self.entries.clear();
+
+        for (index, name, path, is_modified) in buffers {
+            self.entries.push(FileEntry {
+                path: path.clone(),
+                name: format!("{}. {}{}", index + 1, name, if is_modified { " [+]" } else { "" }),
+                is_dir: false,
+                is_expanded: false,
+                git_status: None,
+                level: 0,
+                is_buffer: true,
+                buffer_index: Some(index),
+                is_modified,
+            });
+        }
+
+        if self.selected_index >= self.entries.len() && !self.entries.is_empty() {
+            self.selected_index = self.entries.len() - 1;
+        }
+    }
+
+    pub fn get_selected_buffer_index(&self) -> Option<usize> {
+        if self.mode == SidebarMode::Buffers {
+            self.entries.get(self.selected_index)
+                .and_then(|e| e.buffer_index)
+        } else {
+            None
         }
     }
 }

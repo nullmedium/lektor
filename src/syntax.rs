@@ -13,10 +13,22 @@ pub struct SyntaxHighlighter {
 
 impl SyntaxHighlighter {
     pub fn new() -> Self {
+        let ss = SyntaxSet::load_defaults_newlines();
+        let ts = ThemeSet::load_defaults();
+
+        // Use a theme with better bracket/brace highlighting
+        let theme_name = if ts.themes.contains_key("InspiredGitHub") {
+            "InspiredGitHub".to_string()
+        } else if ts.themes.contains_key("base16-ocean.dark") {
+            "base16-ocean.dark".to_string()
+        } else {
+            ts.themes.keys().next().unwrap().to_string()
+        };
+
         Self {
-            syntax_set: SyntaxSet::load_defaults_newlines(),
-            theme_set: ThemeSet::load_defaults(),
-            current_theme: String::from("base16-ocean.dark"),
+            syntax_set: ss,
+            theme_set: ts,
+            current_theme: theme_name,
         }
     }
 
@@ -35,9 +47,14 @@ impl SyntaxHighlighter {
 
         // Handle special cases for extensions that might not be auto-detected
         match extension.to_lowercase().as_str() {
-            "qml" => self.syntax_set.find_syntax_by_name("QML"),
-            "hpp" | "hxx" | "h++" | "hh" => self.syntax_set.find_syntax_by_name("C++"),
+            // QML files - use JavaScript syntax as fallback since QML is JavaScript-based
+            "qml" => self.syntax_set.find_syntax_by_name("QML")
+                .or_else(|| self.syntax_set.find_syntax_by_name("JavaScript")),
+            // C++ header files
+            "hpp" | "hxx" | "h++" | "hh" | "h" => self.syntax_set.find_syntax_by_name("C++"),
+            // C++ source files
             "cpp" | "cxx" | "c++" | "cc" => self.syntax_set.find_syntax_by_name("C++"),
+            // C files (not .h, which is handled above for C++)
             "c" => self.syntax_set.find_syntax_by_name("C"),
             _ => self.syntax_set.find_syntax_by_extension(extension)
                 .or_else(|| {
@@ -101,6 +118,14 @@ impl SyntaxHighlighter {
 
     pub fn find_syntax_by_name(&self, name: &str) -> Option<&SyntaxReference> {
         self.syntax_set.find_syntax_by_name(name)
+    }
+
+    #[allow(dead_code)]
+    pub fn list_syntaxes(&self) -> Vec<String> {
+        self.syntax_set.syntaxes()
+            .iter()
+            .map(|s| format!("{}: {:?}", s.name, s.file_extensions))
+            .collect()
     }
 }
 
