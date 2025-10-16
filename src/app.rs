@@ -170,14 +170,17 @@ impl App {
             (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
                 self.mode = Mode::Search;
                 self.search_query.clear();
-                self.status_message = String::from("Search: ");
+                self.search_matches.clear();
+                let case_mode = if self.case_sensitive { "Case" } else { "Ignore case" };
+                self.status_message = format!("Search [{}]: ", case_mode);
             }
             (KeyCode::Char('h'), KeyModifiers::CONTROL) => {
                 self.mode = Mode::Replace;
                 self.search_query.clear();
                 self.replace_text.clear();
                 self.search_matches.clear();
-                self.status_message = String::from("Search for: ");
+                let case_mode = if self.case_sensitive { "Case" } else { "Ignore case" };
+                self.status_message = format!("Search for [{}]: ", case_mode);
             }
             (KeyCode::Char('i'), KeyModifiers::NONE) => {
                 self.mode = Mode::Insert;
@@ -745,14 +748,28 @@ impl App {
     }
 
     fn handle_search_mode(&mut self, key: KeyEvent) -> Result<()> {
-        match key.code {
-            KeyCode::Esc => {
+        match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) => {
                 self.mode = Mode::Normal;
                 self.search_query.clear();
                 self.search_matches.clear();
                 self.status_message = String::from("-- NORMAL --");
             }
-            KeyCode::Enter => {
+            (KeyCode::Char('g'), KeyModifiers::CONTROL) => {
+                // Toggle case sensitivity
+                self.case_sensitive = !self.case_sensitive;
+                let case_mode = if self.case_sensitive { "Case" } else { "Ignore case" };
+
+                // Re-search with new case sensitivity if we have a query
+                if !self.search_query.is_empty() {
+                    self.search_matches = self.buffer_manager.current().find_all_matches(&self.search_query, self.case_sensitive);
+                    let count = self.search_matches.len();
+                    self.status_message = format!("Search [{}]: {} ({} matches)", case_mode, self.search_query, count);
+                } else {
+                    self.status_message = format!("Search [{}]: ", case_mode);
+                }
+            }
+            (KeyCode::Enter, _) => {
                 // Perform search
                 if !self.search_query.is_empty() {
                     // Find all matches for highlighting
@@ -784,13 +801,33 @@ impl App {
                 }
                 self.mode = Mode::Normal;
             }
-            KeyCode::Char(c) => {
+            (KeyCode::Char(c), KeyModifiers::NONE) | (KeyCode::Char(c), KeyModifiers::SHIFT) => {
                 self.search_query.push(c);
-                self.status_message = format!("Search: {}", self.search_query);
+                // Update search matches as user types for live preview
+                if !self.search_query.is_empty() {
+                    self.search_matches = self.buffer_manager.current().find_all_matches(&self.search_query, self.case_sensitive);
+                    let count = self.search_matches.len();
+                    let case_mode = if self.case_sensitive { "Case" } else { "Ignore case" };
+                    self.status_message = format!("Search [{}]: {} ({} matches)", case_mode, self.search_query, count);
+                } else {
+                    self.search_matches.clear();
+                    let case_mode = if self.case_sensitive { "Case" } else { "Ignore case" };
+                    self.status_message = format!("Search [{}]: {}", case_mode, self.search_query);
+                }
             }
-            KeyCode::Backspace => {
+            (KeyCode::Backspace, _) => {
                 self.search_query.pop();
-                self.status_message = format!("Search: {}", self.search_query);
+                // Update search matches as user types for live preview
+                if !self.search_query.is_empty() {
+                    self.search_matches = self.buffer_manager.current().find_all_matches(&self.search_query, self.case_sensitive);
+                    let count = self.search_matches.len();
+                    let case_mode = if self.case_sensitive { "Case" } else { "Ignore case" };
+                    self.status_message = format!("Search [{}]: {} ({} matches)", case_mode, self.search_query, count);
+                } else {
+                    self.search_matches.clear();
+                    let case_mode = if self.case_sensitive { "Case" } else { "Ignore case" };
+                    self.status_message = format!("Search [{}]: {}", case_mode, self.search_query);
+                }
             }
             _ => {}
         }
@@ -801,15 +838,38 @@ impl App {
         // Check if we're in the second phase (entering replacement text)
         let entering_replacement = self.search_query.contains('\0');
 
-        match key.code {
-            KeyCode::Esc => {
+        match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) => {
                 self.mode = Mode::Normal;
                 self.search_query.clear();
                 self.replace_text.clear();
                 self.search_matches.clear();
                 self.status_message = String::from("-- NORMAL --");
             }
-            KeyCode::Enter => {
+            (KeyCode::Char('g'), KeyModifiers::CONTROL) => {
+                // Toggle case sensitivity
+                self.case_sensitive = !self.case_sensitive;
+                let case_mode = if self.case_sensitive { "Case" } else { "Ignore case" };
+
+                // Only show status if not in confirmation mode
+                if self.search_query.matches('\0').count() < 2 {
+                    if !entering_replacement {
+                        self.status_message = format!("Search for [{}]: {}", case_mode, self.search_query.trim_end_matches('\0'));
+                    } else {
+                        // Re-find matches with new case sensitivity
+                        let search_text = self.search_query.trim_end_matches('\0');
+                        self.search_matches = self.buffer_manager.current().find_all_matches(search_text, self.case_sensitive);
+                        self.status_message = format!(
+                            "Replace '{}' with [{}] ({} matches): {}",
+                            search_text,
+                            case_mode,
+                            self.search_matches.len(),
+                            self.replace_text
+                        );
+                    }
+                }
+            }
+            (KeyCode::Enter, _) => {
                 if !entering_replacement {
                     // First Enter - finish search query, highlight matches, move to replacement
                     if !self.search_query.is_empty() {
@@ -849,7 +909,7 @@ impl App {
                     self.search_query.push('\0'); // Add another marker
                 }
             }
-            KeyCode::Char(c) => {
+            (KeyCode::Char(c), KeyModifiers::NONE) | (KeyCode::Char(c), KeyModifiers::SHIFT) => {
                 // Check if we're waiting for replace confirmation (two null markers)
                 if self.search_query.matches('\0').count() >= 2 {
                     let search_text = self.search_query.split('\0').next().unwrap_or("").to_string();
@@ -946,30 +1006,36 @@ impl App {
                 } else if !entering_replacement {
                     // Entering search text
                     self.search_query.push(c);
-                    self.status_message = format!("Search for: {}", self.search_query);
+                    let case_mode = if self.case_sensitive { "Case" } else { "Ignore case" };
+                    self.status_message = format!("Search for [{}]: {}", case_mode, self.search_query);
                 } else {
                     // Entering replacement text
                     self.replace_text.push(c);
+                    let case_mode = if self.case_sensitive { "Case" } else { "Ignore case" };
                     self.status_message = format!(
-                        "Replace '{}' with ({} matches): {}",
+                        "Replace '{}' with [{}] ({} matches): {}",
                         self.search_query.trim_end_matches('\0'),
+                        case_mode,
                         self.search_matches.len(),
                         self.replace_text
                     );
                 }
             }
-            KeyCode::Backspace => {
+            (KeyCode::Backspace, _) => {
                 if self.search_query.matches('\0').count() >= 2 {
                     // In confirmation mode, don't allow backspace
                     return Ok(());
                 } else if !entering_replacement {
                     self.search_query.pop();
-                    self.status_message = format!("Search for: {}", self.search_query);
+                    let case_mode = if self.case_sensitive { "Case" } else { "Ignore case" };
+                    self.status_message = format!("Search for [{}]: {}", case_mode, self.search_query);
                 } else {
                     self.replace_text.pop();
+                    let case_mode = if self.case_sensitive { "Case" } else { "Ignore case" };
                     self.status_message = format!(
-                        "Replace '{}' with ({} matches): {}",
+                        "Replace '{}' with [{}] ({} matches): {}",
                         self.search_query.trim_end_matches('\0'),
+                        case_mode,
                         self.search_matches.len(),
                         self.replace_text
                     );
