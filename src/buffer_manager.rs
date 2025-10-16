@@ -4,7 +4,7 @@ use crate::buffer::TextBuffer;
 use crate::syntax::SyntaxHighlighter;
 
 pub struct BufferManager {
-    buffers: Vec<TextBuffer>,
+    pub buffers: Vec<TextBuffer>,
     current_index: usize,
 }
 
@@ -151,6 +151,10 @@ impl BufferManager {
             .enumerate()
             .filter_map(|(i, b)| if b.modified { Some(i) } else { None })
             .collect()
+    }
+
+    pub fn get_modified_buffers(&self) -> Vec<usize> {
+        self.has_unsaved_buffers()
     }
 
     pub fn get_buffer_info_list(&self) -> Vec<(usize, String, PathBuf, bool)> {

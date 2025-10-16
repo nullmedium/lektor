@@ -540,6 +540,86 @@ impl TextBuffer {
         None
     }
 
+    pub fn find_next(&self, query: &str, from_position: (usize, usize), case_sensitive: bool) -> Option<(usize, usize)> {
+        if query.is_empty() {
+            return None;
+        }
+
+        let search_query = if case_sensitive { query.to_string() } else { query.to_lowercase() };
+
+        // Start searching from the given position
+        let mut current_row = from_position.0;
+        let mut start_col = from_position.1;
+
+        while current_row < self.line_count() {
+            let line = self.get_line(current_row);
+            let search_line = if case_sensitive { line.clone() } else { line.to_lowercase() };
+
+            if let Some(col) = search_line[start_col..].find(&search_query) {
+                return Some((current_row, start_col + col));
+            }
+
+            current_row += 1;
+            start_col = 0;
+        }
+
+        // Wrap around to beginning
+        for row in 0..=from_position.0 {
+            let line = self.get_line(row);
+            let search_line = if case_sensitive { line.clone() } else { line.to_lowercase() };
+            let max_col = if row == from_position.0 { from_position.1 } else { line.len() };
+
+            if let Some(col) = search_line[..max_col.min(search_line.len())].find(&search_query) {
+                return Some((row, col));
+            }
+        }
+
+        None
+    }
+
+    pub fn find_all_matches(&self, query: &str, case_sensitive: bool) -> Vec<(usize, usize, usize)> {
+        let mut matches = Vec::new();
+        if query.is_empty() {
+            return matches;
+        }
+
+        let search_query = if case_sensitive { query.to_string() } else { query.to_lowercase() };
+
+        for row in 0..self.line_count() {
+            let line = self.get_line(row);
+            let search_line = if case_sensitive { line.clone() } else { line.to_lowercase() };
+
+            let mut start = 0;
+            while let Some(col) = search_line[start..].find(&search_query) {
+                let actual_col = start + col;
+                matches.push((row, actual_col, actual_col + query.len()));
+                start = actual_col + 1;
+                if start >= search_line.len() {
+                    break;
+                }
+            }
+        }
+
+        matches
+    }
+
+    pub fn replace(&mut self, find: &str, replace_with: &str, _replace_all: bool) {
+        if let Some(pos) = self.find_next(find, self.cursor_position, false) {
+            // Calculate the byte position in the rope
+            let byte_pos = self.content.line_to_byte(pos.0) + pos.1;
+
+            // Remove the old text
+            self.content.remove(byte_pos..byte_pos + find.len());
+
+            // Insert the new text
+            self.content.insert(byte_pos, replace_with);
+
+            // Update cursor position
+            self.cursor_position = (pos.0, pos.1 + replace_with.len());
+            self.modified = true;
+        }
+    }
+
     pub fn get_bracket_depth_at(&self, pos: (usize, usize)) -> usize {
         let line = self.get_line(pos.0);
         if pos.1 >= line.len() {

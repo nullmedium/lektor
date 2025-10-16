@@ -19,6 +19,9 @@ pub enum Mode {
     Insert,
     Visual,
     Command,
+    Search,
+    Replace,
+    QuitConfirm,
 }
 
 pub struct App {
@@ -34,6 +37,13 @@ pub struct App {
     pub viewport_offset: usize,
     pub command_buffer: String,
     clipboard: Option<Clipboard>,
+    search_query: String,
+    replace_text: String,
+    case_sensitive: bool,
+    last_search_position: Option<(usize, usize)>,
+    search_matches: Vec<(usize, usize, usize)>,
+    unsaved_buffers_to_check: Vec<usize>,
+    quit_confirmed: bool,
 }
 
 impl App {
@@ -69,6 +79,13 @@ impl App {
             viewport_offset: 0,
             command_buffer: String::new(),
             clipboard,
+            search_query: String::new(),
+            replace_text: String::new(),
+            case_sensitive: false,
+            last_search_position: None,
+            search_matches: Vec::new(),
+            unsaved_buffers_to_check: Vec::new(),
+            quit_confirmed: false,
         })
     }
 
@@ -106,13 +123,16 @@ impl App {
             Mode::Insert => self.handle_insert_mode(key)?,
             Mode::Visual => self.handle_visual_mode(key)?,
             Mode::Command => self.handle_command_mode(key)?,
+            Mode::Search => self.handle_search_mode(key)?,
+            Mode::Replace => self.handle_replace_mode(key)?,
+            Mode::QuitConfirm => self.handle_quit_confirm_mode(key)?,
         }
         Ok(())
     }
 
     fn handle_normal_mode(&mut self, key: KeyEvent) -> Result<()> {
         match (key.code, key.modifiers) {
-            (KeyCode::Char('q'), KeyModifiers::CONTROL) => self.should_quit = true,
+            (KeyCode::Char('q'), KeyModifiers::CONTROL) => self.try_quit(),
             (KeyCode::Char('s'), KeyModifiers::CONTROL) => self.save_file()?,
             (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
                 self.show_sidebar = !self.show_sidebar;
@@ -146,6 +166,19 @@ impl App {
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => self.copy()?,
             (KeyCode::Char('v'), KeyModifiers::CONTROL) => self.paste()?,
             (KeyCode::Char('a'), KeyModifiers::CONTROL) => self.select_all(),
+            // Search and replace
+            (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
+                self.mode = Mode::Search;
+                self.search_query.clear();
+                self.status_message = String::from("Search: ");
+            }
+            (KeyCode::Char('h'), KeyModifiers::CONTROL) => {
+                self.mode = Mode::Replace;
+                self.search_query.clear();
+                self.replace_text.clear();
+                self.search_matches.clear();
+                self.status_message = String::from("Search for: ");
+            }
             (KeyCode::Char('i'), KeyModifiers::NONE) => {
                 self.mode = Mode::Insert;
                 self.status_message = String::from("-- INSERT --");
@@ -512,7 +545,7 @@ impl App {
         }
 
         match parts[0] {
-            "q" | "quit" => self.should_quit = true,
+            "q" | "quit" => self.try_quit(),
             "w" | "write" => {
                 if parts.len() > 1 {
                     // Save with a specific filename (save as)
@@ -675,6 +708,313 @@ impl App {
         self.buffer_manager.current_mut().cursor_position = (last_line, last_col);
         self.buffer_manager.current_mut().update_selection();
         self.status_message = String::from("Selected all");
+    }
+
+    fn try_quit(&mut self) {
+        // Check for unsaved buffers
+        let unsaved = self.buffer_manager.get_modified_buffers();
+
+        if unsaved.is_empty() {
+            self.should_quit = true;
+        } else {
+            // Store unsaved buffers and enter quit confirm mode
+            self.unsaved_buffers_to_check = unsaved.clone();
+            self.mode = Mode::QuitConfirm;
+
+            // Get list of unsaved files
+            let unsaved_files: Vec<String> = unsaved.iter()
+                .map(|&idx| {
+                    let buffer = &self.buffer_manager.buffers[idx];
+                    if let Some(path) = &buffer.file_path {
+                        path.file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("[Unknown]")
+                            .to_string()
+                    } else {
+                        format!("[Buffer {}]", idx + 1)
+                    }
+                })
+                .collect();
+
+            self.status_message = format!(
+                "Save modified buffers? {} unsaved: {} (y/n/c)",
+                unsaved.len(),
+                unsaved_files.join(", ")
+            );
+        }
+    }
+
+    fn handle_search_mode(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.search_query.clear();
+                self.search_matches.clear();
+                self.status_message = String::from("-- NORMAL --");
+            }
+            KeyCode::Enter => {
+                // Perform search
+                if !self.search_query.is_empty() {
+                    // Find all matches for highlighting
+                    self.search_matches = self.buffer_manager.current().find_all_matches(&self.search_query, self.case_sensitive);
+
+                    let start_pos = self.buffer_manager.current().cursor_position;
+                    if let Some(found) = self.buffer_manager.current().find_next(&self.search_query, start_pos, self.case_sensitive) {
+                        self.buffer_manager.current_mut().cursor_position = found;
+                        self.last_search_position = Some(found);
+
+                        // Select the found text
+                        self.buffer_manager.current_mut().start_selection();
+                        let end_col = found.1 + self.search_query.len();
+                        self.buffer_manager.current_mut().cursor_position = (found.0, end_col);
+                        self.buffer_manager.current_mut().update_selection();
+
+                        // Adjust viewport to show the result
+                        self.update_viewport();
+
+                        let match_count = self.search_matches.len();
+                        let current_match = self.search_matches.iter()
+                            .position(|(r, c, _)| *r == found.0 && *c == found.1)
+                            .map(|i| i + 1)
+                            .unwrap_or(0);
+                        self.status_message = format!("Found: {} ({}/{})", self.search_query, current_match, match_count);
+                    } else {
+                        self.status_message = format!("Not found: {}", self.search_query);
+                    }
+                }
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Char(c) => {
+                self.search_query.push(c);
+                self.status_message = format!("Search: {}", self.search_query);
+            }
+            KeyCode::Backspace => {
+                self.search_query.pop();
+                self.status_message = format!("Search: {}", self.search_query);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn handle_replace_mode(&mut self, key: KeyEvent) -> Result<()> {
+        // Check if we're in the second phase (entering replacement text)
+        let entering_replacement = self.search_query.contains('\0');
+
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.search_query.clear();
+                self.replace_text.clear();
+                self.search_matches.clear();
+                self.status_message = String::from("-- NORMAL --");
+            }
+            KeyCode::Enter => {
+                if !entering_replacement {
+                    // First Enter - finish search query, highlight matches, move to replacement
+                    if !self.search_query.is_empty() {
+                        // Find all matches and highlight them
+                        self.search_matches = self.buffer_manager.current().find_all_matches(&self.search_query, self.case_sensitive);
+
+                        if self.search_matches.is_empty() {
+                            self.status_message = format!("Not found: {}", self.search_query);
+                            self.mode = Mode::Normal;
+                        } else {
+                            // Move cursor to first match
+                            if let Some((row, col, _)) = self.search_matches.first() {
+                                self.buffer_manager.current_mut().cursor_position = (*row, *col);
+                                self.update_viewport();
+                            }
+
+                            // Mark that we're entering replacement text with a null separator
+                            self.search_query.push('\0');
+                            self.status_message = format!(
+                                "Replace '{}' with ({} matches): {}",
+                                self.search_query.trim_end_matches('\0'),
+                                self.search_matches.len(),
+                                self.replace_text
+                            );
+                        }
+                    }
+                } else {
+                    // Second Enter - show replace options
+                    let search_text = self.search_query.trim_end_matches('\0');
+                    self.status_message = format!(
+                        "Replace '{}' → '{}': (y)es / (n)o / (a)ll / (q)uit",
+                        search_text,
+                        self.replace_text
+                    );
+
+                    // Set a flag to indicate we're waiting for replace confirmation
+                    self.search_query.push('\0'); // Add another marker
+                }
+            }
+            KeyCode::Char(c) => {
+                // Check if we're waiting for replace confirmation (two null markers)
+                if self.search_query.matches('\0').count() >= 2 {
+                    let search_text = self.search_query.split('\0').next().unwrap_or("").to_string();
+                    match c {
+                        'y' | 'Y' => {
+                            // Replace current occurrence and move to next
+                            if let Some((row, col, _)) = self.search_matches.first().copied() {
+                                self.buffer_manager.current_mut().cursor_position = (row, col);
+                                self.buffer_manager.current_mut().replace(&search_text, &self.replace_text, false);
+
+                                // Remove this match and find next
+                                self.search_matches.remove(0);
+
+                                // Update matches positions after replacement
+                                let len_diff = self.replace_text.len() as i32 - search_text.len() as i32;
+                                for (match_row, match_col, match_end) in &mut self.search_matches {
+                                    if *match_row == row && *match_col > col {
+                                        *match_col = (*match_col as i32 + len_diff).max(0) as usize;
+                                        *match_end = (*match_end as i32 + len_diff).max(0) as usize;
+                                    }
+                                }
+
+                                if !self.search_matches.is_empty() {
+                                    // Move to next match
+                                    if let Some((next_row, next_col, _)) = self.search_matches.first() {
+                                        self.buffer_manager.current_mut().cursor_position = (*next_row, *next_col);
+                                        self.update_viewport();
+                                    }
+                                    self.status_message = format!(
+                                        "Replace '{}' → '{}': (y)es / (n)o / (a)ll / (q)uit ({} left)",
+                                        search_text,
+                                        self.replace_text,
+                                        self.search_matches.len()
+                                    );
+                                } else {
+                                    self.status_message = format!("Replaced all occurrences");
+                                    self.mode = Mode::Normal;
+                                    self.search_matches.clear();
+                                }
+                            }
+                        }
+                        'n' | 'N' => {
+                            // Skip current and move to next
+                            if !self.search_matches.is_empty() {
+                                self.search_matches.remove(0);
+                                if !self.search_matches.is_empty() {
+                                    if let Some((next_row, next_col, _)) = self.search_matches.first() {
+                                        self.buffer_manager.current_mut().cursor_position = (*next_row, *next_col);
+                                        self.update_viewport();
+                                    }
+                                    self.status_message = format!(
+                                        "Replace '{}' → '{}': (y)es / (n)o / (a)ll / (q)uit ({} left)",
+                                        search_text,
+                                        self.replace_text,
+                                        self.search_matches.len()
+                                    );
+                                } else {
+                                    self.status_message = String::from("No more matches");
+                                    self.mode = Mode::Normal;
+                                    self.search_matches.clear();
+                                }
+                            }
+                        }
+                        'a' | 'A' => {
+                            // Replace all remaining
+                            let mut replaced_count = 0;
+                            let matches = self.search_matches.clone();
+
+                            // Process matches in reverse to avoid position issues
+                            for (row, col, _) in matches.iter().rev() {
+                                self.buffer_manager.current_mut().cursor_position = (*row, *col);
+                                self.buffer_manager.current_mut().replace(&search_text, &self.replace_text, false);
+                                replaced_count += 1;
+                            }
+
+                            self.status_message = format!("Replaced {} occurrences", replaced_count);
+                            self.mode = Mode::Normal;
+                            self.search_matches.clear();
+                        }
+                        'q' | 'Q' => {
+                            // Quit replace mode
+                            self.mode = Mode::Normal;
+                            self.search_matches.clear();
+                            self.status_message = String::from("Replace cancelled");
+                        }
+                        _ => {
+                            self.status_message = format!(
+                                "Replace '{}' → '{}': (y)es / (n)o / (a)ll / (q)uit",
+                                search_text,
+                                self.replace_text
+                            );
+                        }
+                    }
+                } else if !entering_replacement {
+                    // Entering search text
+                    self.search_query.push(c);
+                    self.status_message = format!("Search for: {}", self.search_query);
+                } else {
+                    // Entering replacement text
+                    self.replace_text.push(c);
+                    self.status_message = format!(
+                        "Replace '{}' with ({} matches): {}",
+                        self.search_query.trim_end_matches('\0'),
+                        self.search_matches.len(),
+                        self.replace_text
+                    );
+                }
+            }
+            KeyCode::Backspace => {
+                if self.search_query.matches('\0').count() >= 2 {
+                    // In confirmation mode, don't allow backspace
+                    return Ok(());
+                } else if !entering_replacement {
+                    self.search_query.pop();
+                    self.status_message = format!("Search for: {}", self.search_query);
+                } else {
+                    self.replace_text.pop();
+                    self.status_message = format!(
+                        "Replace '{}' with ({} matches): {}",
+                        self.search_query.trim_end_matches('\0'),
+                        self.search_matches.len(),
+                        self.replace_text
+                    );
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn handle_quit_confirm_mode(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                // Save all unsaved buffers
+                for &idx in &self.unsaved_buffers_to_check {
+                    let buffer = &mut self.buffer_manager.buffers[idx];
+                    if buffer.file_path.is_some() {
+                        buffer.save()?;
+                    } else {
+                        // For unnamed buffers, we need to prompt for a name
+                        // For now, skip them and warn
+                        self.status_message = String::from("Cannot save unnamed buffers. Use :w filename first");
+                        self.mode = Mode::Normal;
+                        return Ok(());
+                    }
+                }
+                self.should_quit = true;
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                // Quit without saving
+                self.should_quit = true;
+            }
+            KeyCode::Char('c') | KeyCode::Char('C') | KeyCode::Esc => {
+                // Cancel quit
+                self.mode = Mode::Normal;
+                self.status_message = String::from("Quit cancelled");
+                self.unsaved_buffers_to_check.clear();
+            }
+            _ => {
+                self.status_message = format!(
+                    "Save modified buffers? (y)es / (n)o / (c)ancel"
+                );
+            }
+        }
+        Ok(())
     }
 
     pub fn draw(&mut self, frame: &mut Frame) {
@@ -1001,6 +1341,9 @@ impl App {
             Mode::Insert => " INSERT ",
             Mode::Visual => " VISUAL ",
             Mode::Command => " COMMAND ",
+            Mode::Search => " SEARCH ",
+            Mode::Replace => " REPLACE ",
+            Mode::QuitConfirm => " QUIT? ",
         };
 
         let mode_style = match self.mode {
@@ -1016,9 +1359,13 @@ impl App {
                 .fg(hex_to_color(&theme.ui.status_bar.mode_visual))
                 .bg(hex_to_color(&theme.ui.status_bar.background))
                 .add_modifier(Modifier::BOLD),
-            Mode::Command => Style::default()
+            Mode::Command | Mode::Search | Mode::Replace => Style::default()
                 .fg(hex_to_color(&theme.ui.status_bar.foreground))
                 .bg(hex_to_color(&theme.ui.status_bar.background)),
+            Mode::QuitConfirm => Style::default()
+                .fg(ratatui::style::Color::Rgb(255, 100, 100))
+                .bg(hex_to_color(&theme.ui.status_bar.background))
+                .add_modifier(Modifier::BOLD),
         };
 
         // Buffer info: [1/3] filename [+]
