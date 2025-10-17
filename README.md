@@ -70,6 +70,9 @@ cargo build --release
 - `h/j/k/l` or Arrow keys - Navigate in editor
 - `0` - Move to line start
 - `$` - Move to line end
+- `dd` - Delete current line (and copy to clipboard)
+- `yy` - Yank (copy) current line to clipboard
+- `Ctrl+K` - Delete from cursor to end of line
 - `Ctrl+S` - Save file
 - `Ctrl+Q` - Quit
 - `Ctrl+Z` - Undo last change

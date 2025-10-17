@@ -1,0 +1,30 @@
+# Lektor Configuration File
+# Copy this to ~/.config/lektor/config.toml and customize
+
+[editor]
+tab_width = 4
+use_spaces = true
+auto_indent = true
+show_line_numbers = true
+highlight_current_line = true
+word_wrap = false
+auto_save = false
+auto_save_interval = 30
+
+[theme]
+name = "Dark"
+syntax_theme = "Solarized (dark)"
+
+[keybindings]
+save = "Ctrl+S"
+quit = "Ctrl+Q"
+open = "Ctrl+O"
+find = "Ctrl+F"
+replace = "Ctrl+H"
+goto_line = "Ctrl+G"
+toggle_sidebar = "Ctrl+B"
+
+[sidebar]
+show_hidden_files = false
+show_git_status = true
+width = 25

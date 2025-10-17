@@ -1,0 +1,11 @@
+This is a test file for undo/redo functionality.
+
+Instructions:
+1. Make some edits to this file
+2. Press Ctrl+Z to undo
+3. Press Ctrl+Y to redo
+4. Test mouse click to position cursor
+5. Test mouse drag to select text
+6. Test mouse scroll wheel
+
+Test your edits here:

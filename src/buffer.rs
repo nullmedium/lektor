@@ -193,7 +193,14 @@ impl TextBuffer {
         if self.cursor_position.0 > 0 {
             self.cursor_position.0 -= 1;
             let line = self.content.line(self.cursor_position.0);
-            let line_len = line.len_chars().saturating_sub(1);
+            // Check if line ends with newline
+            let line_str = line.as_str().unwrap_or("");
+            let has_newline = line_str.ends_with('\n');
+            let line_len = if has_newline {
+                line.len_chars().saturating_sub(1)
+            } else {
+                line.len_chars()
+            };
             self.cursor_position.1 = self.cursor_position.1.min(line_len);
         }
     }
@@ -202,7 +209,14 @@ impl TextBuffer {
         if self.cursor_position.0 < self.content.len_lines().saturating_sub(1) {
             self.cursor_position.0 += 1;
             let line = self.content.line(self.cursor_position.0);
-            let line_len = line.len_chars().saturating_sub(1);
+            // Check if line ends with newline
+            let line_str = line.as_str().unwrap_or("");
+            let has_newline = line_str.ends_with('\n');
+            let line_len = if has_newline {
+                line.len_chars().saturating_sub(1)
+            } else {
+                line.len_chars()
+            };
             self.cursor_position.1 = self.cursor_position.1.min(line_len);
         }
     }
@@ -213,13 +227,27 @@ impl TextBuffer {
         } else if self.cursor_position.0 > 0 {
             self.cursor_position.0 -= 1;
             let line = self.content.line(self.cursor_position.0);
-            self.cursor_position.1 = line.len_chars().saturating_sub(1);
+            // Check if line ends with newline
+            let line_str = line.as_str().unwrap_or("");
+            let has_newline = line_str.ends_with('\n');
+            self.cursor_position.1 = if has_newline {
+                line.len_chars().saturating_sub(1)
+            } else {
+                line.len_chars()
+            };
         }
     }
 
     pub fn move_cursor_right(&mut self) {
         let line = self.content.line(self.cursor_position.0);
-        let line_len = line.len_chars().saturating_sub(1);
+        // Check if line ends with newline
+        let line_str = line.as_str().unwrap_or("");
+        let has_newline = line_str.ends_with('\n');
+        let line_len = if has_newline {
+            line.len_chars().saturating_sub(1)
+        } else {
+            line.len_chars()
+        };
 
         if self.cursor_position.1 < line_len {
             self.cursor_position.1 += 1;
@@ -235,7 +263,14 @@ impl TextBuffer {
 
     pub fn move_to_line_end(&mut self) {
         let line = self.content.line(self.cursor_position.0);
-        self.cursor_position.1 = line.len_chars().saturating_sub(1);
+        // Check if line ends with newline
+        let line_str = line.as_str().unwrap_or("");
+        let has_newline = line_str.ends_with('\n');
+        self.cursor_position.1 = if has_newline {
+            line.len_chars().saturating_sub(1)
+        } else {
+            line.len_chars()
+        };
     }
 
     pub fn get_line(&self, row: usize) -> String {
@@ -779,5 +814,89 @@ impl TextBuffer {
 
     pub fn can_redo(&self) -> bool {
         self.undo_manager.can_redo()
+    }
+
+    pub fn delete_line(&mut self) -> String {
+        // Save state before modification
+        self.save_state();
+
+        let (row, _) = self.cursor_position;
+
+        // Get the line content to return (for yanking)
+        let line_content = self.get_line(row);
+
+        if row < self.content.len_lines() {
+            let line_start = self.content.line_to_char(row);
+            let line = self.content.line(row);
+            let line_end = line_start + line.len_chars();
+
+            // Remove the line
+            self.content.remove(line_start..line_end);
+
+            // Adjust cursor position
+            if row >= self.content.len_lines() && row > 0 {
+                self.cursor_position.0 = row - 1;
+            }
+
+            // Move cursor to start of line
+            self.cursor_position.1 = 0;
+
+            self.modified = true;
+        }
+
+        line_content
+    }
+
+    pub fn delete_to_end_of_line(&mut self) -> String {
+        // Save state before modification
+        self.save_state();
+
+        let (row, col) = self.cursor_position;
+        let line = self.content.line(row);
+
+        // Check if line ends with newline
+        let line_str = line.as_str().unwrap_or("");
+        let has_newline = line_str.ends_with('\n');
+        let line_len = line.len_chars();
+
+        // Get the text from cursor to end of line (for yanking)
+        let mut deleted_text = String::new();
+
+        if col < line_len {
+            let line_start = self.content.line_to_char(row);
+            let start_pos = line_start + col;
+
+            // Calculate end position
+            let end_pos = if col == 0 {
+                // When at start of line, delete entire line including newline if present
+                line_start + line_len
+            } else if has_newline {
+                // Don't include the newline when deleting from middle of line
+                line_start + line_len - 1
+            } else {
+                // No newline, delete to actual end of line
+                line_start + line_len
+            };
+
+            // Get the text to be deleted
+            if start_pos < end_pos {
+                for i in start_pos..end_pos {
+                    if let Some(ch) = self.content.get_char(i) {
+                        deleted_text.push(ch);
+                    }
+                }
+
+                // Remove the text
+                self.content.remove(start_pos..end_pos);
+                self.modified = true;
+            }
+        }
+
+        deleted_text
+    }
+
+    pub fn yank_line(&self) -> String {
+        let (row, _) = self.cursor_position;
+        self.get_line(row)
     }
 }

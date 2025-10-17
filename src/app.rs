@@ -45,6 +45,7 @@ pub struct App {
     search_matches: Vec<(usize, usize, usize)>,
     unsaved_buffers_to_check: Vec<usize>,
     quit_confirmed: bool,
+    last_key: Option<KeyCode>,
 }
 
 impl App {
@@ -87,6 +88,7 @@ impl App {
             search_matches: Vec::new(),
             unsaved_buffers_to_check: Vec::new(),
             quit_confirmed: false,
+            last_key: None,
         })
     }
 
@@ -132,6 +134,17 @@ impl App {
     }
 
     fn handle_normal_mode(&mut self, key: KeyEvent) -> Result<()> {
+        // Clear last_key if it's not 'd' or 'y' being pressed
+        if !matches!((key.code, key.modifiers), (KeyCode::Char('d'), KeyModifiers::NONE) | (KeyCode::Char('y'), KeyModifiers::NONE)) {
+            if self.last_key.is_some() {
+                self.last_key = None;
+                // Clear the 'd' or 'y' indicator from status
+                if self.status_message == "d" || self.status_message == "y" {
+                    self.status_message = String::from("-- NORMAL --");
+                }
+            }
+        }
+
         match (key.code, key.modifiers) {
             (KeyCode::Char('q'), KeyModifiers::CONTROL) => self.try_quit(),
             (KeyCode::Char('s'), KeyModifiers::CONTROL) => self.save_file()?,
@@ -183,6 +196,17 @@ impl App {
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => self.copy()?,
             (KeyCode::Char('v'), KeyModifiers::CONTROL) => self.paste()?,
             (KeyCode::Char('a'), KeyModifiers::CONTROL) => self.select_all(),
+            (KeyCode::Char('k'), KeyModifiers::CONTROL) => {
+                // Delete from cursor to end of line (like Ctrl+K in many editors)
+                let deleted_text = self.buffer_manager.current_mut().delete_to_end_of_line();
+                if !deleted_text.is_empty() {
+                    // Store in clipboard
+                    if let Some(ref mut clipboard) = self.clipboard {
+                        let _ = clipboard.set_text(deleted_text);
+                    }
+                    self.status_message = String::from("Deleted to end of line");
+                }
+            }
             // Search and replace
             (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
                 self.mode = Mode::Search;
@@ -249,6 +273,42 @@ impl App {
                 self.buffer_manager.current_mut().move_cursor_down();
                 self.buffer_manager.current_mut().update_selection();
                 self.update_viewport();
+            }
+            // Vim-style dd command (delete line)
+            (KeyCode::Char('d'), KeyModifiers::NONE) => {
+                // Check if the last key was also 'd' for dd command
+                if matches!(self.last_key, Some(KeyCode::Char('d'))) {
+                    // Delete the current line
+                    let deleted_line = self.buffer_manager.current_mut().delete_line();
+                    // Store in clipboard
+                    if let Some(ref mut clipboard) = self.clipboard {
+                        let _ = clipboard.set_text(deleted_line);
+                    }
+                    self.status_message = String::from("Line deleted");
+                    self.last_key = None; // Reset
+                } else {
+                    // Store 'd' as the last key
+                    self.last_key = Some(KeyCode::Char('d'));
+                    self.status_message = String::from("d");
+                }
+            }
+            // Vim-style yy command (yank/copy line)
+            (KeyCode::Char('y'), KeyModifiers::NONE) => {
+                // Check if the last key was also 'y' for yy command
+                if matches!(self.last_key, Some(KeyCode::Char('y'))) {
+                    // Yank (copy) the current line
+                    let yanked_line = self.buffer_manager.current().yank_line();
+                    // Store in clipboard
+                    if let Some(ref mut clipboard) = self.clipboard {
+                        let _ = clipboard.set_text(yanked_line);
+                    }
+                    self.status_message = String::from("Line yanked");
+                    self.last_key = None; // Reset
+                } else {
+                    // Store 'y' as the last key
+                    self.last_key = Some(KeyCode::Char('y'));
+                    self.status_message = String::from("y");
+                }
             }
             // Normal movement (clears selection)
             (KeyCode::Char('h'), KeyModifiers::NONE) | (KeyCode::Left, KeyModifiers::NONE) => {
