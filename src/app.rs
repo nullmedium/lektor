@@ -1,11 +1,12 @@
 use crate::buffer_manager::BufferManager;
 use crate::config::Config;
+use crate::cursor::CursorManager;
 use crate::sidebar::{GitStatus, Sidebar, SidebarMode};
 use crate::syntax::SyntaxHighlighter;
 use crate::theme::{get_ui_style, hex_to_color, ThemeManager};
 use anyhow::Result;
 use arboard::Clipboard;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind, MouseButton};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -134,6 +135,22 @@ impl App {
         match (key.code, key.modifiers) {
             (KeyCode::Char('q'), KeyModifiers::CONTROL) => self.try_quit(),
             (KeyCode::Char('s'), KeyModifiers::CONTROL) => self.save_file()?,
+            (KeyCode::Char('z'), KeyModifiers::CONTROL) => {
+                // Undo
+                if self.buffer_manager.current_mut().undo() {
+                    self.status_message = String::from("Undo");
+                } else {
+                    self.status_message = String::from("Nothing to undo");
+                }
+            }
+            (KeyCode::Char('y'), KeyModifiers::CONTROL) => {
+                // Redo
+                if self.buffer_manager.current_mut().redo() {
+                    self.status_message = String::from("Redo");
+                } else {
+                    self.status_message = String::from("Nothing to redo");
+                }
+            }
             (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
                 self.show_sidebar = !self.show_sidebar;
             }
@@ -385,6 +402,22 @@ impl App {
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => self.copy()?,
             (KeyCode::Char('v'), KeyModifiers::CONTROL) => self.paste()?,
             (KeyCode::Char('a'), KeyModifiers::CONTROL) => self.select_all(),
+            (KeyCode::Char('z'), KeyModifiers::CONTROL) => {
+                // Undo
+                if self.buffer_manager.current_mut().undo() {
+                    self.status_message = String::from("Undo");
+                } else {
+                    self.status_message = String::from("Nothing to undo");
+                }
+            }
+            (KeyCode::Char('y'), KeyModifiers::CONTROL) => {
+                // Redo
+                if self.buffer_manager.current_mut().redo() {
+                    self.status_message = String::from("Redo");
+                } else {
+                    self.status_message = String::from("Nothing to redo");
+                }
+            }
             // Selection with Shift+Arrow keys in insert mode
             (KeyCode::Left, KeyModifiers::SHIFT) => {
                 if self.buffer_manager.current().selection.is_none() {
@@ -1079,6 +1112,128 @@ impl App {
                     "Save modified buffers? (y)es / (n)o / (c)ancel"
                 );
             }
+        }
+        Ok(())
+    }
+
+    pub fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Result<()> {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Calculate the position in the editor area
+                let col = mouse.column as usize;
+                let row = mouse.row as usize;
+
+                // Check if click is in sidebar
+                if self.show_sidebar && col < self.config.sidebar.width as usize {
+                    if let Some(sidebar) = &mut self.sidebar {
+                        sidebar.handle_click(row);
+
+                        // Handle sidebar item selection
+                        if sidebar.mode == SidebarMode::Files {
+                            if let Some(selected_item) = sidebar.get_selected_item() {
+                                match selected_item {
+                                    crate::sidebar::SidebarItem::File(path) => {
+                                        self.buffer_manager.open_file(&path, &self.syntax_highlighter)?;
+                                        self.status_message = format!("Opened: {}", path.display());
+                                    }
+                                    crate::sidebar::SidebarItem::Directory(path, _expanded) => {
+                                        sidebar.toggle_directory(&path)?;
+                                    }
+                                    crate::sidebar::SidebarItem::Parent => {
+                                        sidebar.navigate_to_parent()?;
+                                    }
+                                }
+                            }
+                        } else if sidebar.mode == SidebarMode::Buffers {
+                            let selected_idx = sidebar.selected_index;
+                            if selected_idx > 0 {
+                                let buffer_idx = selected_idx - 1;
+                                if self.buffer_manager.go_to_buffer(buffer_idx) {
+                                    self.status_message = format!("Switched to buffer {}", buffer_idx + 1);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Click in editor area
+                    let editor_col = if self.show_sidebar {
+                        col.saturating_sub(self.config.sidebar.width as usize + 1)
+                    } else {
+                        col
+                    };
+
+                    // Account for line numbers (if shown)
+                    let line_number_width = if self.config.editor.show_line_numbers {
+                        let max_line = self.buffer_manager.current().content.len_lines();
+                        format!("{}", max_line).len() + 2
+                    } else {
+                        0
+                    };
+
+                    let content_col = editor_col.saturating_sub(line_number_width);
+                    // Don't subtract 1 from row - the mouse coordinates are already 0-based
+                    let content_row = row + self.viewport_offset;
+
+                    // Set cursor position if within content bounds
+                    let buffer = self.buffer_manager.current_mut();
+                    if content_row < buffer.content.len_lines() {
+                        let line = buffer.content.line(content_row);
+                        let line_len = line.len_chars().saturating_sub(1);
+                        let actual_col = content_col.min(line_len);
+
+                        buffer.cursor_position = (content_row, actual_col);
+                        buffer.clear_selection();
+                    }
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                // Handle text selection with mouse drag
+                if !self.show_sidebar || mouse.column >= self.config.sidebar.width {
+                    let editor_col = if self.show_sidebar {
+                        mouse.column.saturating_sub(self.config.sidebar.width + 1)
+                    } else {
+                        mouse.column
+                    } as usize;
+
+                    let line_number_width = if self.config.editor.show_line_numbers {
+                        let max_line = self.buffer_manager.current().content.len_lines();
+                        format!("{}", max_line).len() + 2
+                    } else {
+                        0
+                    };
+
+                    let content_col = editor_col.saturating_sub(line_number_width);
+                    // Don't subtract 1 from row - the mouse coordinates are already 0-based
+                    let content_row = (mouse.row as usize) + self.viewport_offset;
+
+                    let buffer = self.buffer_manager.current_mut();
+                    if content_row < buffer.content.len_lines() {
+                        if buffer.selection.is_none() {
+                            buffer.start_selection();
+                        }
+
+                        let line = buffer.content.line(content_row);
+                        let line_len = line.len_chars().saturating_sub(1);
+                        let actual_col = content_col.min(line_len);
+
+                        buffer.cursor_position = (content_row, actual_col);
+                        buffer.update_selection();
+                    }
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                // Scroll down
+                let max_offset = self.buffer_manager.current().content.len_lines()
+                    .saturating_sub(10);
+                if self.viewport_offset < max_offset {
+                    self.viewport_offset += 3;
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                // Scroll up
+                self.viewport_offset = self.viewport_offset.saturating_sub(3);
+            }
+            _ => {}
         }
         Ok(())
     }

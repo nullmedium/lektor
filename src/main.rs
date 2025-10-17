@@ -2,9 +2,11 @@ mod app;
 mod buffer;
 mod buffer_manager;
 mod config;
+mod cursor;
 mod sidebar;
 mod syntax;
 mod theme;
+mod undo;
 
 use anyhow::Result;
 use app::App;
@@ -87,8 +89,14 @@ fn run_app<B: ratatui::backend::Backend>(
         })?;
 
         if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                app.handle_key_event(key)?;
+            match event::read()? {
+                Event::Key(key) => {
+                    app.handle_key_event(key)?;
+                }
+                Event::Mouse(mouse) => {
+                    app.handle_mouse_event(mouse)?;
+                }
+                _ => {}
             }
         }
 

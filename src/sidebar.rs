@@ -4,6 +4,13 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone)]
+pub enum SidebarItem {
+    File(PathBuf),
+    Directory(PathBuf, bool),  // path, is_expanded
+    Parent,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SidebarMode {
     Files,
@@ -321,5 +328,39 @@ impl Sidebar {
         } else {
             None
         }
+    }
+
+    pub fn handle_click(&mut self, row: usize) {
+        // Don't adjust the row - mouse coordinates are already correct
+        // Check if the click is within the visible range
+        let visible_index = row + self.scroll_offset;
+
+        if visible_index < self.entries.len() {
+            self.selected_index = visible_index;
+        }
+    }
+
+    pub fn get_selected_item(&self) -> Option<SidebarItem> {
+        if let Some(entry) = self.entries.get(self.selected_index) {
+            if entry.name == ".." {
+                Some(SidebarItem::Parent)
+            } else if entry.is_dir {
+                Some(SidebarItem::Directory(entry.path.clone(), entry.is_expanded))
+            } else {
+                Some(SidebarItem::File(entry.path.clone()))
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn toggle_directory(&mut self, path: &PathBuf) -> Result<()> {
+        if let Some(entry) = self.entries.iter_mut().find(|e| &e.path == path && e.is_dir) {
+            entry.is_expanded = !entry.is_expanded;
+            // Rebuild the entries to show/hide directory contents
+            let root = self.root_path.clone();
+            self.load_entries(&root, 0)?;
+        }
+        Ok(())
     }
 }

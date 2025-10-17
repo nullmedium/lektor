@@ -2,6 +2,7 @@ use anyhow::Result;
 use ropey::Rope;
 use std::fs;
 use std::path::{Path, PathBuf};
+use crate::undo::{UndoManager, EditorState};
 
 #[derive(Debug, Clone)]
 pub struct TextBuffer {
@@ -11,6 +12,20 @@ pub struct TextBuffer {
     pub cursor_position: (usize, usize),
     pub selection: Option<Selection>,
     pub syntax_name: Option<String>,
+    pub undo_manager: UndoManager,
+}
+
+impl Default for UndoManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Clone for UndoManager {
+    fn clone(&self) -> Self {
+        // Create a new empty undo manager when cloning
+        Self::new()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +71,7 @@ impl TextBuffer {
             cursor_position: (0, 0),
             selection: None,
             syntax_name: None,
+            undo_manager: UndoManager::new(),
         }
     }
 
@@ -70,6 +86,7 @@ impl TextBuffer {
             cursor_position: (0, 0),
             selection: None,
             syntax_name: None,
+            undo_manager: UndoManager::new(),
         })
     }
 
@@ -89,6 +106,9 @@ impl TextBuffer {
     }
 
     pub fn insert_char(&mut self, ch: char) {
+        // Save state before modification
+        self.save_state();
+
         let (row, col) = self.cursor_position;
         let line_idx = self.content.line_to_char(row);
         let pos = line_idx + col;
@@ -105,31 +125,51 @@ impl TextBuffer {
     }
 
     pub fn insert_str(&mut self, text: &str) {
+        // Save state once before all insertions
+        self.save_state();
+
         for ch in text.chars() {
-            self.insert_char(ch);
+            let (row, col) = self.cursor_position;
+            let line_idx = self.content.line_to_char(row);
+            let pos = line_idx + col;
+
+            self.content.insert_char(pos, ch);
+
+            if ch == '\n' {
+                self.cursor_position = (row + 1, 0);
+            } else {
+                self.cursor_position.1 += 1;
+            }
         }
+
+        self.modified = true;
     }
 
     pub fn delete_char(&mut self) {
         let (row, col) = self.cursor_position;
 
-        if col > 0 {
-            let line_idx = self.content.line_to_char(row);
-            let pos = line_idx + col - 1;
+        if col > 0 || row > 0 {
+            // Save state before modification
+            self.save_state();
 
-            self.content.remove(pos..pos + 1);
-            self.cursor_position.1 -= 1;
-            self.modified = true;
-        } else if row > 0 {
-            let prev_line = self.content.line(row - 1);
-            let prev_line_len = prev_line.len_chars().saturating_sub(1);
+            if col > 0 {
+                let line_idx = self.content.line_to_char(row);
+                let pos = line_idx + col - 1;
 
-            let line_idx = self.content.line_to_char(row);
-            let pos = line_idx - 1;
+                self.content.remove(pos..pos + 1);
+                self.cursor_position.1 -= 1;
+                self.modified = true;
+            } else if row > 0 {
+                let prev_line = self.content.line(row - 1);
+                let prev_line_len = prev_line.len_chars().saturating_sub(1);
 
-            self.content.remove(pos..pos + 1);
-            self.cursor_position = (row - 1, prev_line_len);
-            self.modified = true;
+                let line_idx = self.content.line_to_char(row);
+                let pos = line_idx - 1;
+
+                self.content.remove(pos..pos + 1);
+                self.cursor_position = (row - 1, prev_line_len);
+                self.modified = true;
+            }
         }
     }
 
@@ -686,5 +726,58 @@ impl TextBuffer {
         }
 
         depth
+    }
+
+    pub fn save_state(&mut self) {
+        let state = EditorState {
+            content: self.content.clone(),
+            cursor_position: self.cursor_position,
+            selection: self.selection.clone(),
+        };
+        self.undo_manager.save_state(state);
+    }
+
+    pub fn undo(&mut self) -> bool {
+        let current_state = EditorState {
+            content: self.content.clone(),
+            cursor_position: self.cursor_position,
+            selection: self.selection.clone(),
+        };
+
+        if let Some(previous_state) = self.undo_manager.undo(current_state) {
+            self.content = previous_state.content;
+            self.cursor_position = previous_state.cursor_position;
+            self.selection = previous_state.selection;
+            self.modified = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn redo(&mut self) -> bool {
+        let current_state = EditorState {
+            content: self.content.clone(),
+            cursor_position: self.cursor_position,
+            selection: self.selection.clone(),
+        };
+
+        if let Some(next_state) = self.undo_manager.redo(current_state) {
+            self.content = next_state.content;
+            self.cursor_position = next_state.cursor_position;
+            self.selection = next_state.selection;
+            self.modified = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.undo_manager.can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.undo_manager.can_redo()
     }
 }

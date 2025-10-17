@@ -4,6 +4,15 @@ A modern TUI text editor built with Rust, featuring syntax highlighting, Git int
 
 ## Features
 
+- **Undo/Redo Support**
+  - Full undo/redo history with Ctrl+Z/Ctrl+Y
+  - Maintains cursor position and selection state
+  - Works in both Normal and Insert modes
+- **Mouse Support**
+  - Click to position cursor
+  - Drag to select text
+  - Scroll wheel support
+  - Sidebar navigation with mouse
 - **Multiple Buffer Support**
   - Work with multiple files simultaneously
   - Buffer indicator in status bar shows [current/total]
@@ -13,6 +22,11 @@ A modern TUI text editor built with Rust, featuring syntax highlighting, Git int
   - Shows current directory tree by default
   - Expandable/collapsible directories
   - Git status indicators for modified files
+- **Search and Replace**
+  - Case-sensitive/insensitive search
+  - Interactive replace with preview
+  - Replace all or one-by-one
+  - Preserves syntax highlighting during search
 - **Git Integration** showing file status in sidebar
 - **Syntax Highlighting** for multiple languages including:
   - Rust, C, C++
@@ -20,6 +34,7 @@ A modern TUI text editor built with Rust, featuring syntax highlighting, Git int
   - HTML, CSS, JSON, TOML
   - QML for Qt development
   - And many more via syntect
+- **Rainbow Brackets** with matching bracket highlighting
 - **Theme Support** with dark and light themes
 - **Configurable** via TOML configuration file
 - **Modal Editing** with Normal, Insert, Visual, and Command modes
@@ -57,6 +72,8 @@ cargo build --release
 - `$` - Move to line end
 - `Ctrl+S` - Save file
 - `Ctrl+Q` - Quit
+- `Ctrl+Z` - Undo last change
+- `Ctrl+Y` - Redo last undone change
 
 ### Sidebar Navigation (Normal Mode)
 - `Ctrl+B` - Toggle sidebar visibility
@@ -101,6 +118,8 @@ cargo build --release
 - `Tab` - Insert tab/spaces
 - Regular typing for text input
 - All selection/clipboard shortcuts work in insert mode
+- `Ctrl+Z` - Undo last change
+- `Ctrl+Y` - Redo last undone change
 
 ### Command Mode
 - `:w` - Save file (for existing files)
@@ -117,6 +136,28 @@ cargo build --release
 - `:ls` or `:buffers` - List all open buffers
 
 Note: When saving an unnamed buffer with Ctrl+S, it will prompt for a filename in command mode.
+
+### Search Mode (Ctrl+F)
+- Type search query
+- `Enter` - Jump to next match
+- `Ctrl+G` - Toggle case-sensitive search
+- `Esc` - Exit search mode
+
+### Replace Mode (Ctrl+H)
+- Type search query, press `Enter`
+- Type replacement text, press `Enter`
+- Choose replace option:
+  - `y` - Replace current and continue
+  - `n` - Skip current and continue
+  - `a` - Replace all occurrences
+  - `q` or `Esc` - Quit replace mode
+- `Ctrl+G` - Toggle case-sensitive search (before confirming)
+
+### Mouse Support
+- **Left Click** - Position cursor at click location
+- **Left Click in Sidebar** - Select file/directory or buffer
+- **Left Drag** - Select text
+- **Scroll Wheel** - Scroll up/down in the editor
 
 ## Configuration
 
