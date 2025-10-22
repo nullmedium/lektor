@@ -1084,17 +1084,25 @@ impl App {
     }
 
     fn execute_command(&mut self) -> Result<()> {
-        // Remove leading colon if present
+        // Remove leading colon if present and clone to avoid borrow issues
         let command = if self.command_buffer.starts_with(':') {
-            &self.command_buffer[1..]
+            self.command_buffer[1..].to_string()
         } else {
-            &self.command_buffer
+            self.command_buffer.clone()
         };
 
         let parts: Vec<&str> = command.split_whitespace().collect();
 
         if parts.is_empty() {
             return Ok(());
+        }
+
+        // Try session commands first
+        let args = if parts.len() > 1 { &parts[1..] } else { &[] };
+        if let Ok(handled) = crate::session_commands::execute_session_command(self, parts[0], args) {
+            if handled {
+                return Ok(());
+            }
         }
 
         match parts[0] {

@@ -3,7 +3,11 @@ mod buffer;
 mod buffer_manager;
 mod config;
 mod cursor;
+mod session;
+mod session_handler;
+mod session_commands;
 mod sidebar;
+mod split;
 mod syntax;
 mod theme;
 mod undo;
@@ -11,6 +15,7 @@ mod undo;
 use anyhow::Result;
 use app::App;
 use config::Config;
+use session_handler::SessionHandler;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event},
     execute,
@@ -58,11 +63,15 @@ fn main() -> Result<()> {
 
     let mut app = App::new_with_dir(config, working_dir)?;
 
+    // Initialize session handler and restore session if configured
+    let session_handler = SessionHandler::init_session(&mut app)?;
+    session_commands::init_session_handler(session_handler);
+
     if let Some(file_path) = file_to_open {
         app.open_file(&file_path)?;
     }
 
-    let res = run_app(&mut terminal, app);
+    let res = run_app(&mut terminal, &mut app);
 
     disable_raw_mode()?;
     execute!(
@@ -81,7 +90,7 @@ fn main() -> Result<()> {
 
 fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
-    mut app: App,
+    app: &mut App,
 ) -> Result<()> {
     loop {
         terminal.draw(|f| {
@@ -101,6 +110,10 @@ fn run_app<B: ratatui::backend::Backend>(
         }
 
         if app.should_quit {
+            // Save session before quitting if auto-save is enabled
+            if let Err(e) = session_commands::save_session_on_exit(app) {
+                eprintln!("Failed to save session: {}", e);
+            }
             break;
         }
     }

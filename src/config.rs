@@ -9,6 +9,7 @@ pub struct Config {
     pub theme: ThemeConfig,
     pub keybindings: KeybindingsConfig,
     pub sidebar: SidebarConfig,
+    pub session: SessionConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +50,15 @@ pub struct SidebarConfig {
     pub width: u16,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionConfig {
+    pub auto_save: bool,
+    pub auto_restore: bool,
+    pub workspace_sessions: bool,
+    pub restore_cursor_position: bool,
+    pub restore_open_buffers: bool,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
@@ -81,6 +91,13 @@ impl Default for Config {
                 show_hidden_files: false,
                 show_git_status: true,
                 width: 25,
+            },
+            session: SessionConfig {
+                auto_save: true,
+                auto_restore: true,
+                workspace_sessions: true,
+                restore_cursor_position: true,
+                restore_open_buffers: true,
             },
         }
     }
