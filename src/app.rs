@@ -1,7 +1,8 @@
+use crate::buffer::TextBuffer;
 use crate::buffer_manager::BufferManager;
 use crate::config::Config;
-use crate::cursor::CursorManager;
 use crate::sidebar::{GitStatus, Sidebar, SidebarMode};
+use crate::split::{SplitManager, SplitDirection, Pane};
 use crate::syntax::SyntaxHighlighter;
 use crate::theme::{get_ui_style, hex_to_color, ThemeManager};
 use anyhow::Result;
@@ -29,6 +30,7 @@ pub struct App {
     pub config: Config,
     pub buffer_manager: BufferManager,
     pub sidebar: Option<Sidebar>,
+    pub split_manager: Option<SplitManager>,
     pub syntax_highlighter: SyntaxHighlighter,
     pub theme_manager: ThemeManager,
     pub mode: Mode,
@@ -72,6 +74,7 @@ impl App {
             config,
             buffer_manager: BufferManager::new(),
             sidebar,
+            split_manager: None,
             syntax_highlighter,
             theme_manager,
             mode: Mode::Normal,
@@ -95,7 +98,126 @@ impl App {
     pub fn open_file(&mut self, path: &PathBuf) -> Result<()> {
         self.buffer_manager.open_file(path, &self.syntax_highlighter)?;
         self.status_message = format!("Opened: {}", path.display());
+
+        // Don't initialize split_manager here - only when actually splitting
+
         Ok(())
+    }
+
+    pub fn split_horizontal(&mut self) -> Result<()> {
+        // Initialize split manager if needed
+        if self.split_manager.is_none() {
+            let terminal_size = crossterm::terminal::size()?;
+            let sidebar_width = if self.show_sidebar { 20 } else { 0 };
+            self.split_manager = Some(SplitManager::new(
+                self.buffer_manager.current_index,
+                terminal_size.0,
+                terminal_size.1.saturating_sub(2),
+                sidebar_width,
+            ));
+
+            // Now perform the split with the same buffer index
+            if let Some(split_manager) = &mut self.split_manager {
+                if split_manager.split_current(SplitDirection::Horizontal, self.buffer_manager.current_index) {
+                    self.status_message = String::from("Split horizontally");
+                } else {
+                    self.status_message = String::from("Failed to split");
+                }
+            }
+        } else {
+            // Split manager already exists, perform split
+            if let Some(split_manager) = &mut self.split_manager {
+                // Use the same buffer index for the new pane
+                if split_manager.split_current(SplitDirection::Horizontal, self.buffer_manager.current_index) {
+                    self.status_message = String::from("Split horizontally");
+                } else {
+                    self.status_message = String::from("Failed to split");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn split_vertical(&mut self) -> Result<()> {
+        // Initialize split manager if needed
+        if self.split_manager.is_none() {
+            let terminal_size = crossterm::terminal::size()?;
+            let sidebar_width = if self.show_sidebar { 20 } else { 0 };
+            self.split_manager = Some(SplitManager::new(
+                self.buffer_manager.current_index,
+                terminal_size.0,
+                terminal_size.1.saturating_sub(2),
+                sidebar_width,
+            ));
+
+            // Now perform the split with the same buffer index
+            if let Some(split_manager) = &mut self.split_manager {
+                if split_manager.split_current(SplitDirection::Vertical, self.buffer_manager.current_index) {
+                    self.status_message = String::from("Split vertically");
+                } else {
+                    self.status_message = String::from("Failed to split");
+                }
+            }
+        } else {
+            // Split manager already exists, perform split
+            if let Some(split_manager) = &mut self.split_manager {
+                // Use the same buffer index for the new pane
+                if split_manager.split_current(SplitDirection::Vertical, self.buffer_manager.current_index) {
+                    self.status_message = String::from("Split vertically");
+                } else {
+                    self.status_message = String::from("Failed to split");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn next_pane(&mut self) {
+        if let Some(split_manager) = &mut self.split_manager {
+            split_manager.next_pane();
+            self.status_message = format!("Switched to pane {}", split_manager.active_pane_index + 1);
+        }
+    }
+
+    fn get_pane_buffer(&self, pane: &Pane) -> &TextBuffer {
+        &self.buffer_manager.buffers[pane.buffer_index]
+    }
+
+    fn get_pane_buffer_mut(&mut self, pane: &Pane) -> &mut TextBuffer {
+        &mut self.buffer_manager.buffers[pane.buffer_index]
+    }
+
+    fn get_active_buffer_mut(&mut self) -> Option<&mut TextBuffer> {
+        if let Some(split_manager) = &mut self.split_manager {
+            if let Some(pane) = split_manager.get_active_pane() {
+                            let buffer_index = pane.buffer_index;
+                            let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                let buffer_index = buffer_index;
+                return Some(&mut self.buffer_manager.buffers[buffer_index]);
+            }
+        }
+        Some(self.buffer_manager.current_mut())
+    }
+
+    fn update_active_pane_cursor(&mut self) {
+        if let Some(split_manager) = &mut self.split_manager {
+            if let Some(pane) = split_manager.get_active_pane() {
+                            let buffer_index = pane.buffer_index;
+                            let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                let buffer_index = buffer_index;
+                let buffer = &self.buffer_manager.buffers[buffer_index];
+                pane.cursor_x = buffer.cursor_position.1;
+                pane.cursor_y = buffer.cursor_position.0;
+                pane.adjust_viewport(buffer.cursor_position.0);
+            }
+        }
+    }
+
+    pub fn previous_pane(&mut self) {
+        if let Some(split_manager) = &mut self.split_manager {
+            split_manager.previous_pane();
+            self.status_message = format!("Switched to pane {}", split_manager.active_pane_index + 1);
+        }
     }
 
     pub fn save_file(&mut self) -> Result<()> {
@@ -134,12 +256,28 @@ impl App {
     }
 
     fn handle_normal_mode(&mut self, key: KeyEvent) -> Result<()> {
-        // Clear last_key if it's not 'd' or 'y' being pressed
-        if !matches!((key.code, key.modifiers), (KeyCode::Char('d'), KeyModifiers::NONE) | (KeyCode::Char('y'), KeyModifiers::NONE)) {
+        // Clear last_key if it's not 'd', 'y', or 'w' being pressed
+        let should_keep_last_key = matches!(
+            (key.code, key.modifiers),
+            (KeyCode::Char('d'), KeyModifiers::NONE) |
+            (KeyCode::Char('y'), KeyModifiers::NONE) |
+            (KeyCode::Char('w'), KeyModifiers::CONTROL)
+        );
+
+        // Also keep last_key if we're processing a Ctrl+W command
+        let processing_ctrl_w = matches!(self.last_key, Some(KeyCode::Char('w'))) && matches!(
+            key.code,
+            KeyCode::Char('s') | KeyCode::Char('S') | KeyCode::Char('v') | KeyCode::Char('V') |
+            KeyCode::Char('w') | KeyCode::Char('W') | KeyCode::Char('h') | KeyCode::Char('l') |
+            KeyCode::Char('j') | KeyCode::Char('k') | KeyCode::Left | KeyCode::Right |
+            KeyCode::Up | KeyCode::Down
+        );
+
+        if !should_keep_last_key && !processing_ctrl_w {
             if self.last_key.is_some() {
                 self.last_key = None;
-                // Clear the 'd' or 'y' indicator from status
-                if self.status_message == "d" || self.status_message == "y" {
+                // Clear the command indicator from status
+                if self.status_message == "d" || self.status_message == "y" || self.status_message == "^W" {
                     self.status_message = String::from("-- NORMAL --");
                 }
             }
@@ -166,6 +304,12 @@ impl App {
             }
             (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
                 self.show_sidebar = !self.show_sidebar;
+            }
+            // Split view commands (Ctrl+W followed by another key)
+            (KeyCode::Char('w'), KeyModifiers::CONTROL) => {
+                // Store 'w' as the last key to wait for next command
+                self.last_key = Some(KeyCode::Char('w'));
+                self.status_message = String::from("^W");
             }
             (KeyCode::Char('r'), KeyModifiers::CONTROL) => {
                 // Refresh sidebar
@@ -227,7 +371,7 @@ impl App {
                 self.mode = Mode::Insert;
                 self.status_message = String::from("-- INSERT --");
             }
-            (KeyCode::Char('v'), KeyModifiers::NONE) => {
+            (KeyCode::Char('v'), KeyModifiers::NONE) if !matches!(self.last_key, Some(KeyCode::Char('w'))) => {
                 self.mode = Mode::Visual;
                 self.status_message = String::from("-- VISUAL --");
             }
@@ -274,6 +418,72 @@ impl App {
                 self.buffer_manager.current_mut().update_selection();
                 self.update_viewport();
             }
+            // Handle split commands after Ctrl+W
+            (KeyCode::Char('s'), KeyModifiers::NONE) | (KeyCode::Char('S'), KeyModifiers::SHIFT) if matches!(self.last_key, Some(KeyCode::Char('w'))) => {
+                // Horizontal split
+                self.split_horizontal()?;
+                self.last_key = None;
+            }
+            (KeyCode::Char('v'), KeyModifiers::NONE) if matches!(self.last_key, Some(KeyCode::Char('w'))) => {
+                // Vertical split
+                self.split_vertical()?;
+                self.last_key = None;
+            }
+            (KeyCode::Char('V'), KeyModifiers::SHIFT) if matches!(self.last_key, Some(KeyCode::Char('w'))) => {
+                // Vertical split (capital V)
+                self.split_vertical()?;
+                self.last_key = None;
+            }
+            (KeyCode::Char('w'), KeyModifiers::NONE) if matches!(self.last_key, Some(KeyCode::Char('w'))) => {
+                // Cycle through panes
+                self.next_pane();
+                self.last_key = None;
+            }
+            (KeyCode::Char('W'), KeyModifiers::SHIFT) if matches!(self.last_key, Some(KeyCode::Char('w'))) => {
+                // Cycle backwards through panes
+                self.previous_pane();
+                self.last_key = None;
+            }
+            (KeyCode::Char('h'), KeyModifiers::NONE) if matches!(self.last_key, Some(KeyCode::Char('w'))) => {
+                // Move to left pane (for now just cycle)
+                self.previous_pane();
+                self.last_key = None;
+            }
+            (KeyCode::Char('l'), KeyModifiers::NONE) if matches!(self.last_key, Some(KeyCode::Char('w'))) => {
+                // Move to right pane (for now just cycle)
+                self.next_pane();
+                self.last_key = None;
+            }
+            (KeyCode::Char('j'), KeyModifiers::NONE) if matches!(self.last_key, Some(KeyCode::Char('w'))) => {
+                // Move to below pane (for now just cycle)
+                self.next_pane();
+                self.last_key = None;
+            }
+            (KeyCode::Char('k'), KeyModifiers::NONE) if matches!(self.last_key, Some(KeyCode::Char('w'))) => {
+                // Move to above pane (for now just cycle)
+                self.previous_pane();
+                self.last_key = None;
+            }
+            (KeyCode::Left, KeyModifiers::NONE) if matches!(self.last_key, Some(KeyCode::Char('w'))) => {
+                // Move to left pane with arrow key
+                self.previous_pane();
+                self.last_key = None;
+            }
+            (KeyCode::Right, KeyModifiers::NONE) if matches!(self.last_key, Some(KeyCode::Char('w'))) => {
+                // Move to right pane with arrow key
+                self.next_pane();
+                self.last_key = None;
+            }
+            (KeyCode::Down, KeyModifiers::NONE) if matches!(self.last_key, Some(KeyCode::Char('w'))) => {
+                // Move to below pane with arrow key
+                self.next_pane();
+                self.last_key = None;
+            }
+            (KeyCode::Up, KeyModifiers::NONE) if matches!(self.last_key, Some(KeyCode::Char('w'))) => {
+                // Move to above pane with arrow key
+                self.previous_pane();
+                self.last_key = None;
+            }
             // Vim-style dd command (delete line)
             (KeyCode::Char('d'), KeyModifiers::NONE) => {
                 // Check if the last key was also 'd' for dd command
@@ -286,8 +496,8 @@ impl App {
                     }
                     self.status_message = String::from("Line deleted");
                     self.last_key = None; // Reset
-                } else {
-                    // Store 'd' as the last key
+                } else if !matches!(self.last_key, Some(KeyCode::Char('w'))) {
+                    // Only set 'd' as last key if we're not in the middle of a Ctrl+W command
                     self.last_key = Some(KeyCode::Char('d'));
                     self.status_message = String::from("d");
                 }
@@ -315,8 +525,23 @@ impl App {
                 if self.show_sidebar && self.sidebar.is_some() {
                     self.show_sidebar = false;
                 } else {
-                    self.buffer_manager.current_mut().move_cursor_left();
-                    self.buffer_manager.current_mut().clear_selection();
+                    // Handle movement in split views or normal buffer
+                    if let Some(split_manager) = &mut self.split_manager {
+                        if let Some(pane) = split_manager.get_active_pane() {
+                            let buffer_index = pane.buffer_index;
+                            let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                            let buffer_index = buffer_index;
+                            let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                            buffer.move_cursor_left();
+                            buffer.clear_selection();
+                            pane.cursor_x = buffer.cursor_position.1;
+                            pane.cursor_y = buffer.cursor_position.0;
+                            pane.adjust_viewport(buffer.cursor_position.0);
+                        }
+                    } else {
+                        self.buffer_manager.current_mut().move_cursor_left();
+                        self.buffer_manager.current_mut().clear_selection();
+                    }
                 }
             }
             (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, KeyModifiers::NONE) => {
@@ -325,9 +550,24 @@ impl App {
                         sidebar.move_down();
                     }
                 } else {
-                    self.buffer_manager.current_mut().move_cursor_down();
-                    self.buffer_manager.current_mut().clear_selection();
-                    self.update_viewport();
+                    // Handle movement in split views or normal buffer
+                    if let Some(split_manager) = &mut self.split_manager {
+                        if let Some(pane) = split_manager.get_active_pane() {
+                            let buffer_index = pane.buffer_index;
+                            let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                            let buffer_index = buffer_index;
+                            let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                            buffer.move_cursor_down();
+                            buffer.clear_selection();
+                            pane.cursor_x = buffer.cursor_position.1;
+                            pane.cursor_y = buffer.cursor_position.0;
+                            pane.adjust_viewport(buffer.cursor_position.0);
+                        }
+                    } else {
+                        self.buffer_manager.current_mut().move_cursor_down();
+                        self.buffer_manager.current_mut().clear_selection();
+                        self.update_viewport();
+                    }
                 }
             }
             (KeyCode::Char('k'), KeyModifiers::NONE) | (KeyCode::Up, KeyModifiers::NONE) => {
@@ -336,9 +576,24 @@ impl App {
                         sidebar.move_up();
                     }
                 } else {
-                    self.buffer_manager.current_mut().move_cursor_up();
-                    self.buffer_manager.current_mut().clear_selection();
-                    self.update_viewport();
+                    // Handle movement in split views or normal buffer
+                    if let Some(split_manager) = &mut self.split_manager {
+                        if let Some(pane) = split_manager.get_active_pane() {
+                            let buffer_index = pane.buffer_index;
+                            let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                            let buffer_index = buffer_index;
+                            let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                            buffer.move_cursor_up();
+                            buffer.clear_selection();
+                            pane.cursor_x = buffer.cursor_position.1;
+                            pane.cursor_y = buffer.cursor_position.0;
+                            pane.adjust_viewport(buffer.cursor_position.0);
+                        }
+                    } else {
+                        self.buffer_manager.current_mut().move_cursor_up();
+                        self.buffer_manager.current_mut().clear_selection();
+                        self.update_viewport();
+                    }
                 }
             }
             (KeyCode::Char('l'), KeyModifiers::NONE) | (KeyCode::Right, KeyModifiers::NONE) => {
@@ -349,8 +604,23 @@ impl App {
                         }
                     }
                 } else {
-                    self.buffer_manager.current_mut().move_cursor_right();
-                    self.buffer_manager.current_mut().clear_selection();
+                    // Handle movement in split views or normal buffer
+                    if let Some(split_manager) = &mut self.split_manager {
+                        if let Some(pane) = split_manager.get_active_pane() {
+                            let buffer_index = pane.buffer_index;
+                            let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                            let buffer_index = buffer_index;
+                            let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                            buffer.move_cursor_right();
+                            buffer.clear_selection();
+                            pane.cursor_x = buffer.cursor_position.1;
+                            pane.cursor_y = buffer.cursor_position.0;
+                            pane.adjust_viewport(buffer.cursor_position.0);
+                        }
+                    } else {
+                        self.buffer_manager.current_mut().move_cursor_right();
+                        self.buffer_manager.current_mut().clear_selection();
+                    }
                 }
             }
             // Word movement with Ctrl
@@ -511,25 +781,83 @@ impl App {
             }
             // Typing replaces selection
             (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
-                self.buffer_manager.current_mut().delete_selection();
-                self.buffer_manager.current_mut().insert_char(c);
+                if let Some(split_manager) = &mut self.split_manager {
+                    if let Some(pane) = split_manager.get_active_pane() {
+                            let buffer_index = pane.buffer_index;
+                            let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                        let buffer_index = buffer_index;
+                        let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                        buffer.delete_selection();
+                        buffer.insert_char(c);
+                        pane.cursor_x = buffer.cursor_position.1;
+                        pane.cursor_y = buffer.cursor_position.0;
+                        pane.adjust_viewport(buffer.cursor_position.0);
+                    }
+                } else {
+                    self.buffer_manager.current_mut().delete_selection();
+                    self.buffer_manager.current_mut().insert_char(c);
+                }
             }
             (KeyCode::Enter, _) => {
-                self.buffer_manager.current_mut().delete_selection();
-                self.buffer_manager.current_mut().insert_char('\n');
+                if let Some(split_manager) = &mut self.split_manager {
+                    if let Some(pane) = split_manager.get_active_pane() {
+                            let buffer_index = pane.buffer_index;
+                            let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                        let buffer_index = buffer_index;
+                        let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                        buffer.delete_selection();
+                        buffer.insert_char('\n');
+                        pane.cursor_x = buffer.cursor_position.1;
+                        pane.cursor_y = buffer.cursor_position.0;
+                        pane.adjust_viewport(buffer.cursor_position.0);
+                    }
+                } else {
+                    self.buffer_manager.current_mut().delete_selection();
+                    self.buffer_manager.current_mut().insert_char('\n');
+                }
             }
             (KeyCode::Backspace, _) => {
-                if self.buffer_manager.current().selection.is_some() {
-                    self.buffer_manager.current_mut().delete_selection();
+                if let Some(split_manager) = &mut self.split_manager {
+                    if let Some(pane) = split_manager.get_active_pane() {
+                        let buffer_index = pane.buffer_index;
+                        let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                        if buffer.selection.is_some() {
+                            buffer.delete_selection();
+                        } else {
+                            buffer.delete_char();
+                        }
+                        pane.cursor_x = buffer.cursor_position.1;
+                        pane.cursor_y = buffer.cursor_position.0;
+                        pane.adjust_viewport(buffer.cursor_position.0);
+                    }
                 } else {
-                    self.buffer_manager.current_mut().delete_char();
+                    if self.buffer_manager.current().selection.is_some() {
+                        self.buffer_manager.current_mut().delete_selection();
+                    } else {
+                        self.buffer_manager.current_mut().delete_char();
+                    }
                 }
             }
             (KeyCode::Delete, _) => {
-                if self.buffer_manager.current().selection.is_some() {
-                    self.buffer_manager.current_mut().delete_selection();
+                if let Some(split_manager) = &mut self.split_manager {
+                    if let Some(pane) = split_manager.get_active_pane() {
+                            let buffer_index = pane.buffer_index;
+                            let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                        if buffer.selection.is_some() {
+                            buffer.delete_selection();
+                        } else {
+                            buffer.delete_forward();
+                        }
+                        pane.cursor_x = buffer.cursor_position.1;
+                        pane.cursor_y = buffer.cursor_position.0;
+                        pane.adjust_viewport(buffer.cursor_position.0);
+                    }
                 } else {
-                    self.buffer_manager.current_mut().delete_forward();
+                    if self.buffer_manager.current().selection.is_some() {
+                        self.buffer_manager.current_mut().delete_selection();
+                    } else {
+                        self.buffer_manager.current_mut().delete_forward();
+                    }
                 }
             }
             (KeyCode::BackTab, _) => {
@@ -557,36 +885,104 @@ impl App {
             }
             (KeyCode::Tab, _) => {
                 // Tab - indent selection or insert tab
-                if self.buffer_manager.current().has_selection() {
-                    self.buffer_manager.current_mut().indent_selection(self.config.editor.use_spaces, self.config.editor.tab_width);
-                } else {
-                    // Normal tab insertion
-                    if self.config.editor.use_spaces {
-                        for _ in 0..self.config.editor.tab_width {
-                            self.buffer_manager.current_mut().insert_char(' ');
+                if let Some(split_manager) = &mut self.split_manager {
+                    if let Some(pane) = split_manager.get_active_pane() {
+                            let buffer_index = pane.buffer_index;
+                            let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                        if buffer.has_selection() {
+                            buffer.indent_selection(self.config.editor.use_spaces, self.config.editor.tab_width);
+                        } else {
+                            // Normal tab insertion
+                            if self.config.editor.use_spaces {
+                                for _ in 0..self.config.editor.tab_width {
+                                    buffer.insert_char(' ');
+                                }
+                            } else {
+                                buffer.insert_char('\t');
+                            }
                         }
+                        pane.cursor_x = buffer.cursor_position.1;
+                        pane.cursor_y = buffer.cursor_position.0;
+                        pane.adjust_viewport(buffer.cursor_position.0);
+                    }
+                } else {
+                    if self.buffer_manager.current().has_selection() {
+                        self.buffer_manager.current_mut().indent_selection(self.config.editor.use_spaces, self.config.editor.tab_width);
                     } else {
-                        self.buffer_manager.current_mut().insert_char('\t');
+                        // Normal tab insertion
+                        if self.config.editor.use_spaces {
+                            for _ in 0..self.config.editor.tab_width {
+                                self.buffer_manager.current_mut().insert_char(' ');
+                            }
+                        } else {
+                            self.buffer_manager.current_mut().insert_char('\t');
+                        }
                     }
                 }
             }
             (KeyCode::Left, KeyModifiers::NONE) => {
-                self.buffer_manager.current_mut().move_cursor_left();
-                self.buffer_manager.current_mut().clear_selection();
+                if let Some(split_manager) = &mut self.split_manager {
+                    if let Some(pane) = split_manager.get_active_pane() {
+                            let buffer_index = pane.buffer_index;
+                            let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                        buffer.move_cursor_left();
+                        buffer.clear_selection();
+                        pane.cursor_x = buffer.cursor_position.1;
+                        pane.cursor_y = buffer.cursor_position.0;
+                    }
+                } else {
+                    self.buffer_manager.current_mut().move_cursor_left();
+                    self.buffer_manager.current_mut().clear_selection();
+                }
             }
             (KeyCode::Right, KeyModifiers::NONE) => {
-                self.buffer_manager.current_mut().move_cursor_right();
-                self.buffer_manager.current_mut().clear_selection();
+                if let Some(split_manager) = &mut self.split_manager {
+                    if let Some(pane) = split_manager.get_active_pane() {
+                            let buffer_index = pane.buffer_index;
+                            let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                        buffer.move_cursor_right();
+                        buffer.clear_selection();
+                        pane.cursor_x = buffer.cursor_position.1;
+                        pane.cursor_y = buffer.cursor_position.0;
+                    }
+                } else {
+                    self.buffer_manager.current_mut().move_cursor_right();
+                    self.buffer_manager.current_mut().clear_selection();
+                }
             }
             (KeyCode::Up, KeyModifiers::NONE) => {
-                self.buffer_manager.current_mut().move_cursor_up();
-                self.buffer_manager.current_mut().clear_selection();
-                self.update_viewport();
+                if let Some(split_manager) = &mut self.split_manager {
+                    if let Some(pane) = split_manager.get_active_pane() {
+                            let buffer_index = pane.buffer_index;
+                            let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                        buffer.move_cursor_up();
+                        buffer.clear_selection();
+                        pane.cursor_x = buffer.cursor_position.1;
+                        pane.cursor_y = buffer.cursor_position.0;
+                        pane.adjust_viewport(buffer.cursor_position.0);
+                    }
+                } else {
+                    self.buffer_manager.current_mut().move_cursor_up();
+                    self.buffer_manager.current_mut().clear_selection();
+                    self.update_viewport();
+                }
             }
             (KeyCode::Down, KeyModifiers::NONE) => {
-                self.buffer_manager.current_mut().move_cursor_down();
-                self.buffer_manager.current_mut().clear_selection();
-                self.update_viewport();
+                if let Some(split_manager) = &mut self.split_manager {
+                    if let Some(pane) = split_manager.get_active_pane() {
+                            let buffer_index = pane.buffer_index;
+                            let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                        buffer.move_cursor_down();
+                        buffer.clear_selection();
+                        pane.cursor_x = buffer.cursor_position.1;
+                        pane.cursor_y = buffer.cursor_position.0;
+                        pane.adjust_viewport(buffer.cursor_position.0);
+                    }
+                } else {
+                    self.buffer_manager.current_mut().move_cursor_down();
+                    self.buffer_manager.current_mut().clear_selection();
+                    self.update_viewport();
+                }
             }
             _ => {}
         }
@@ -1215,34 +1611,78 @@ impl App {
                         }
                     }
                 } else {
-                    // Click in editor area
-                    let editor_col = if self.show_sidebar {
-                        col.saturating_sub(self.config.sidebar.width as usize + 1)
+                    // Click in editor area - handle split views
+                    if let Some(split_manager) = &mut self.split_manager {
+                        // Find which pane was clicked
+                        if split_manager.handle_click(col as u16, row as u16) {
+                            // Successfully switched to clicked pane
+                            self.status_message = format!("Switched to pane {}", split_manager.active_pane_index + 1);
+
+                            // Now handle click within that pane
+                            if let Some(pane) = split_manager.get_active_pane() {
+                                // Check if click is within pane bounds
+                                if col as u16 >= pane.x && (col as u16) < pane.x + pane.width &&
+                                   row as u16 >= pane.y && (row as u16) < pane.y + pane.height {
+
+                                    let pane_col = (col as u16 - pane.x) as usize;
+                                    let pane_row = (row as u16 - pane.y) as usize;
+
+                                    // Account for line numbers (if shown)
+                                    let line_number_width = if self.config.editor.show_line_numbers {
+                                        5 // Fixed width for line numbers
+                                    } else {
+                                        0
+                                    };
+
+                                    let content_col = pane_col.saturating_sub(line_number_width);
+                                    let content_row = pane_row + pane.viewport_offset;
+
+                                    // Set cursor position if within content bounds
+                                    let buffer_index = pane.buffer_index;
+                                    let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                                    if content_row < buffer.content.len_lines() {
+                                        let line = buffer.content.line(content_row);
+                                        let line_len = line.len_chars().saturating_sub(1);
+                                        let actual_col = content_col.min(line_len);
+
+                                        buffer.cursor_position = (content_row, actual_col);
+                                        pane.cursor_x = actual_col;
+                                        pane.cursor_y = content_row;
+                                        buffer.clear_selection();
+                                    }
+                                }
+                            }
+                        }
                     } else {
-                        col
-                    };
+                        // No split manager, use original single-pane logic
+                        let editor_col = if self.show_sidebar {
+                            col.saturating_sub(self.config.sidebar.width as usize + 1)
+                        } else {
+                            col
+                        };
 
-                    // Account for line numbers (if shown)
-                    let line_number_width = if self.config.editor.show_line_numbers {
-                        let max_line = self.buffer_manager.current().content.len_lines();
-                        format!("{}", max_line).len() + 2
-                    } else {
-                        0
-                    };
+                        // Account for line numbers (if shown)
+                        let line_number_width = if self.config.editor.show_line_numbers {
+                            let max_line = self.buffer_manager.current().content.len_lines();
+                            format!("{}", max_line).len() + 2
+                        } else {
+                            0
+                        };
 
-                    let content_col = editor_col.saturating_sub(line_number_width);
-                    // Don't subtract 1 from row - the mouse coordinates are already 0-based
-                    let content_row = row + self.viewport_offset;
+                        let content_col = editor_col.saturating_sub(line_number_width);
+                        // Don't subtract 1 from row - the mouse coordinates are already 0-based
+                        let content_row = row + self.viewport_offset;
 
-                    // Set cursor position if within content bounds
-                    let buffer = self.buffer_manager.current_mut();
-                    if content_row < buffer.content.len_lines() {
-                        let line = buffer.content.line(content_row);
-                        let line_len = line.len_chars().saturating_sub(1);
-                        let actual_col = content_col.min(line_len);
+                        // Set cursor position if within content bounds
+                        let buffer = self.buffer_manager.current_mut();
+                        if content_row < buffer.content.len_lines() {
+                            let line = buffer.content.line(content_row);
+                            let line_len = line.len_chars().saturating_sub(1);
+                            let actual_col = content_col.min(line_len);
 
-                        buffer.cursor_position = (content_row, actual_col);
-                        buffer.clear_selection();
+                            buffer.cursor_position = (content_row, actual_col);
+                            buffer.clear_selection();
+                        }
                     }
                 }
             }
@@ -1299,7 +1739,7 @@ impl App {
     }
 
     pub fn draw(&mut self, frame: &mut Frame) {
-        let theme = self.theme_manager.get_current_theme();
+        let _theme = self.theme_manager.get_current_theme();
         let size = frame.area();
 
         let main_layout = if self.show_sidebar {
@@ -1328,13 +1768,258 @@ impl App {
             ])
             .split(main_layout[1]);
 
-        self.draw_editor(frame, editor_layout[0]);
+        // Use split manager if available, otherwise draw single editor
+        if self.split_manager.is_some() {
+            self.draw_splits(frame, editor_layout[0]);
+        } else {
+            self.draw_editor(frame, editor_layout[0]);
+        }
+
         self.draw_status_bar(frame, editor_layout[1]);
 
         if self.mode == Mode::Command {
             self.draw_command_line(frame, editor_layout[2]);
         } else {
             self.draw_message_line(frame, editor_layout[2]);
+        }
+    }
+
+    fn draw_splits(&mut self, frame: &mut Frame, area: Rect) {
+        // Recursively draw all panes
+        let active_index = self.split_manager.as_ref().map(|sm| sm.active_pane_index).unwrap_or(0);
+
+        // Temporarily take ownership to avoid borrow conflicts
+        let mut split_manager = self.split_manager.take();
+
+        if let Some(ref mut sm) = split_manager {
+            Self::draw_split_node_static(self, frame, area, &mut sm.root, active_index);
+        }
+
+        // Restore the split manager
+        self.split_manager = split_manager;
+    }
+
+    fn draw_split_node_static(app: &mut App, frame: &mut Frame, area: Rect, node: &mut crate::split::SplitNode, active_index: usize) {
+        use crate::split::SplitNode;
+
+        match node {
+            SplitNode::Leaf(pane) => {
+                // Draw the pane
+                app.draw_pane(frame, area, pane, active_index == 0);
+            }
+            SplitNode::Split { direction, ratio, first, second } => {
+                use crate::split::SplitDirection;
+
+                let (first_area, second_area) = match direction {
+                    SplitDirection::Horizontal => {
+                        let first_height = (area.height as f32 * *ratio) as u16;
+                        (
+                            Rect::new(area.x, area.y, area.width, first_height),
+                            Rect::new(area.x, area.y + first_height, area.width, area.height - first_height),
+                        )
+                    }
+                    SplitDirection::Vertical => {
+                        let first_width = (area.width as f32 * *ratio) as u16;
+                        (
+                            Rect::new(area.x, area.y, first_width, area.height),
+                            Rect::new(area.x + first_width, area.y, area.width - first_width, area.height),
+                        )
+                    }
+                };
+
+                // Count panes in first subtree to determine active index for second
+                let first_pane_count = App::count_panes(first);
+
+                if active_index < first_pane_count {
+                    App::draw_split_node_static(app, frame, first_area, first, active_index);
+                    App::draw_split_node_static(app, frame, second_area, second, usize::MAX); // Not active
+                } else {
+                    App::draw_split_node_static(app, frame, first_area, first, usize::MAX); // Not active
+                    App::draw_split_node_static(app, frame, second_area, second, active_index - first_pane_count);
+                }
+            }
+        }
+    }
+
+    fn count_panes(node: &crate::split::SplitNode) -> usize {
+        use crate::split::SplitNode;
+        match node {
+            SplitNode::Leaf(_) => 1,
+            SplitNode::Split { first, second, .. } => {
+                Self::count_panes(first) + Self::count_panes(second)
+            }
+        }
+    }
+
+    fn draw_pane(&mut self, frame: &mut Frame, area: Rect, pane: &mut Pane, is_active: bool) {
+        let theme = self.theme_manager.get_current_theme();
+
+        // Get the buffer from the buffer_manager
+        let buffer = &self.buffer_manager.buffers[pane.buffer_index];
+
+        // Draw border around pane
+        let border_style = if is_active {
+            Style::default().fg(ratatui::style::Color::Green)
+        } else {
+            Style::default().fg(ratatui::style::Color::Gray)
+        };
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style);
+
+        let inner_area = block.inner(area);
+        frame.render_widget(block, area);
+
+        // Update pane dimensions
+        pane.x = inner_area.x;
+        pane.y = inner_area.y;
+        pane.width = inner_area.width;
+        pane.height = inner_area.height;
+
+        // Draw the buffer content with syntax highlighting
+        let viewport_height = inner_area.height as usize;
+        let lines = buffer.get_visible_lines(pane.viewport_offset, viewport_height);
+        let mut paragraph_lines = Vec::new();
+
+        // Get syntax definition if available
+        let syntax = if let Some(syntax_name) = &buffer.syntax_name {
+            self.syntax_highlighter.find_syntax_by_name(syntax_name)
+        } else if let Some(path) = &buffer.file_path {
+            self.syntax_highlighter.detect_syntax(path)
+        } else {
+            None
+        };
+
+        for (i, line) in lines.iter().enumerate() {
+            let line_number = pane.viewport_offset + i + 1;
+            let mut spans = Vec::new();
+
+            if self.config.editor.show_line_numbers {
+                spans.push(ratatui::text::Span::styled(
+                    format!("{:4} ", line_number),
+                    get_ui_style(theme, "line_numbers"),
+                ));
+            }
+
+            let cursor_pos = buffer.cursor_position;
+            let cursor_row = cursor_pos.0;
+            let is_current_line = pane.viewport_offset + i == cursor_row && is_active;
+
+            // Check for matching bracket at cursor position
+            let matching_bracket = if is_active && cursor_row == pane.viewport_offset + i && self.config.editor.highlight_matching_bracket {
+                buffer.find_matching_bracket(cursor_pos)
+            } else {
+                None
+            };
+
+            // Build spans character by character to handle selection
+            let row = pane.viewport_offset + i;
+
+            // Apply syntax highlighting if available and no selection
+            if buffer.selection.is_none() && syntax.is_some() {
+                if let Some(syntax) = syntax {
+                    if let Ok(highlighted) = self.syntax_highlighter.highlight_line(line, syntax) {
+                        let mut current_col = 0;
+                        for (style, text) in highlighted {
+                            for ch in text.chars() {
+                                let is_bracket = matches!(ch, '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>');
+                                let mut ratatui_style = Style::default();
+
+                                // Check if this position matches the bracket under cursor or its match
+                                let is_matching_bracket = matching_bracket
+                                    .map_or(false, |(match_row, match_col)|
+                                        match_row == row && match_col == current_col
+                                    );
+                                let is_cursor_bracket = is_active && cursor_row == row && cursor_pos.1 == current_col;
+
+                                if is_bracket && self.config.editor.rainbow_brackets {
+                                    // Get bracket depth for rainbow coloring
+                                    let depth = buffer.get_bracket_depth_at((row, current_col));
+                                    ratatui_style = ratatui_style.fg(self.get_rainbow_color(depth));
+
+                                    // Highlight matching brackets
+                                    if is_matching_bracket || is_cursor_bracket {
+                                        ratatui_style = ratatui_style.bg(ratatui::style::Color::Rgb(80, 80, 80))
+                                            .add_modifier(ratatui::style::Modifier::BOLD);
+                                    }
+                                } else {
+                                    // Apply syntax highlighting color
+                                    let fg = style.foreground;
+                                    ratatui_style = ratatui_style.fg(ratatui::style::Color::Rgb(
+                                        fg.r,
+                                        fg.g,
+                                        fg.b,
+                                    ));
+
+                                    // Apply style modifiers
+                                    if style.font_style.contains(syntect::highlighting::FontStyle::BOLD) {
+                                        ratatui_style = ratatui_style.add_modifier(ratatui::style::Modifier::BOLD);
+                                    }
+                                    if style.font_style.contains(syntect::highlighting::FontStyle::ITALIC) {
+                                        ratatui_style = ratatui_style.add_modifier(ratatui::style::Modifier::ITALIC);
+                                    }
+                                    if style.font_style.contains(syntect::highlighting::FontStyle::UNDERLINE) {
+                                        ratatui_style = ratatui_style.add_modifier(ratatui::style::Modifier::UNDERLINED);
+                                    }
+                                }
+
+                                // Apply current line highlighting
+                                if is_current_line && self.config.editor.highlight_current_line {
+                                    if !is_matching_bracket && !is_cursor_bracket {
+                                        ratatui_style = ratatui_style.bg(hex_to_color(&theme.ui.current_line));
+                                    }
+                                }
+
+                                spans.push(Span::styled(ch.to_string(), ratatui_style));
+                                current_col += 1;
+                            }
+                        }
+                    } else {
+                        // Fallback to simple rendering
+                        spans.push(ratatui::text::Span::raw(line.to_string()));
+                    }
+                }
+            } else if buffer.selection.is_some() {
+                // Render with selection support
+                let mut col = 0;
+                for ch in line.chars() {
+                    let is_selected = buffer.is_position_selected(row, col);
+                    let mut style = get_ui_style(theme, "foreground");
+
+                    if is_selected {
+                        style = style.bg(hex_to_color(&theme.ui.selection));
+                    } else if is_current_line && self.config.editor.highlight_current_line {
+                        style = style.bg(hex_to_color(&theme.ui.current_line));
+                    }
+
+                    spans.push(Span::styled(ch.to_string(), style));
+                    col += 1;
+                }
+            } else {
+                // Simple text rendering without syntax highlighting
+                let mut style = get_ui_style(theme, "foreground");
+                if is_current_line && self.config.editor.highlight_current_line {
+                    style = style.bg(hex_to_color(&theme.ui.current_line));
+                }
+                spans.push(ratatui::text::Span::styled(line.to_string(), style));
+            }
+
+            paragraph_lines.push(ratatui::text::Line::from(spans));
+        }
+
+        let paragraph = Paragraph::new(paragraph_lines);
+        frame.render_widget(paragraph, inner_area);
+
+        // Draw cursor if this is the active pane
+        if is_active {
+            let cursor_pos = buffer.cursor_position;
+            let screen_row = cursor_pos.0.saturating_sub(pane.viewport_offset);
+            let screen_col = cursor_pos.1 + if self.config.editor.show_line_numbers { 5 } else { 0 };
+
+            if screen_row < viewport_height {
+                frame.set_cursor_position((inner_area.x + screen_col as u16, inner_area.y + screen_row as u16));
+            }
         }
     }
 

@@ -5,7 +5,7 @@ use crate::syntax::SyntaxHighlighter;
 
 pub struct BufferManager {
     pub buffers: Vec<TextBuffer>,
-    current_index: usize,
+    pub current_index: usize,
 }
 
 impl BufferManager {
