@@ -899,4 +899,199 @@ impl TextBuffer {
         let (row, _) = self.cursor_position;
         self.get_line(row)
     }
+
+    pub fn duplicate_line(&mut self) {
+        self.save_state();
+
+        let (row, col) = self.cursor_position;
+        if row >= self.content.len_lines() {
+            return;
+        }
+
+        // Get the current line content
+        let line_content = self.get_line(row);
+
+        // Find the position to insert the duplicate
+        let insert_pos = if row + 1 < self.content.len_lines() {
+            self.content.line_to_char(row + 1)
+        } else {
+            // If we're on the last line, add a newline first if needed
+            let end_pos = self.content.len_chars();
+            if end_pos > 0 && self.content.char(end_pos - 1) != '\n' {
+                self.content.insert(end_pos, "\n");
+                self.content.len_chars()
+            } else {
+                end_pos
+            }
+        };
+
+        // Insert the duplicated line
+        self.content.insert(insert_pos, &format!("{}\n", line_content.trim_end_matches('\n')));
+
+        // Move cursor to the duplicated line
+        self.cursor_position = (row + 1, col.min(line_content.len().saturating_sub(1)));
+        self.modified = true;
+    }
+
+    pub fn move_line_up(&mut self) {
+        self.save_state();
+
+        let (row, col) = self.cursor_position;
+        if row == 0 || row >= self.content.len_lines() {
+            return;
+        }
+
+        // Get the current line and the line above
+        let current_line = self.get_line(row);
+        let above_line = self.get_line(row - 1);
+
+        // Calculate positions
+        let above_start = self.content.line_to_char(row - 1);
+        let current_end = if row + 1 < self.content.len_lines() {
+            self.content.line_to_char(row + 1)
+        } else {
+            self.content.len_chars()
+        };
+
+        // Remove both lines
+        self.content.remove(above_start..current_end);
+
+        // Insert them in swapped order
+        let new_content = format!("{}{}",
+            current_line.trim_end_matches('\n'),
+            if above_line.ends_with('\n') || row == self.content.len_lines() {
+                format!("\n{}", above_line)
+            } else {
+                format!("\n{}\n", above_line.trim_end_matches('\n'))
+            }
+        );
+        self.content.insert(above_start, &new_content);
+
+        // Update cursor position
+        self.cursor_position = (row - 1, col);
+        self.modified = true;
+    }
+
+    pub fn move_line_down(&mut self) {
+        self.save_state();
+
+        let (row, col) = self.cursor_position;
+        if row >= self.content.len_lines() - 1 {
+            return;
+        }
+
+        // Get the current line and the line below
+        let current_line = self.get_line(row);
+        let below_line = self.get_line(row + 1);
+
+        // Calculate positions
+        let current_start = self.content.line_to_char(row);
+        let below_end = if row + 2 < self.content.len_lines() {
+            self.content.line_to_char(row + 2)
+        } else {
+            self.content.len_chars()
+        };
+
+        // Remove both lines
+        self.content.remove(current_start..below_end);
+
+        // Insert them in swapped order
+        let new_content = format!("{}{}",
+            below_line.trim_end_matches('\n'),
+            if current_line.ends_with('\n') || row + 1 == self.content.len_lines() - 1 {
+                format!("\n{}", current_line)
+            } else {
+                format!("\n{}\n", current_line.trim_end_matches('\n'))
+            }
+        );
+        self.content.insert(current_start, &new_content);
+
+        // Update cursor position
+        self.cursor_position = (row + 1, col);
+        self.modified = true;
+    }
+
+    pub fn join_lines(&mut self) {
+        self.save_state();
+
+        let (row, _) = self.cursor_position;
+        if row >= self.content.len_lines() - 1 {
+            return;
+        }
+
+        // Get the position at the end of current line (excluding newline)
+        let line_end = self.content.line_to_char(row + 1) - 1;
+        let next_line_start = self.content.line_to_char(row + 1);
+
+        // Remove the newline and any leading whitespace on the next line
+        let next_line = self.get_line(row + 1);
+        let trimmed = next_line.trim_start();
+        let whitespace_count = next_line.len() - trimmed.len();
+
+        // Remove newline and leading whitespace
+        self.content.remove(line_end..next_line_start + whitespace_count);
+
+        // Insert a space if needed
+        if line_end > 0 {
+            let prev_char = self.content.char(line_end - 1);
+            let next_char = if line_end < self.content.len_chars() {
+                Some(self.content.char(line_end))
+            } else {
+                None
+            };
+
+            if let Some(next) = next_char {
+                if !prev_char.is_whitespace() && !next.is_whitespace() {
+                    self.content.insert(line_end, " ");
+                }
+            }
+        }
+
+        // Update cursor to the join point
+        let line_content = self.get_line(row);
+        self.cursor_position = (row, line_content.trim_end_matches('\n').len().saturating_sub(1));
+        self.modified = true;
+    }
+
+    pub fn sort_selected_lines(&mut self, ascending: bool) {
+        self.save_state();
+
+        if let Some(selection) = &self.selection {
+            // Use the row numbers from selection
+            let start_row = selection.start.0;
+            let end_row = selection.end.0;
+
+            // Collect all lines in the selection
+            let mut lines: Vec<String> = Vec::new();
+            for row in start_row..=end_row {
+                if row < self.content.len_lines() {
+                    lines.push(self.get_line(row));
+                }
+            }
+
+            // Sort the lines
+            if ascending {
+                lines.sort();
+            } else {
+                lines.sort_by(|a, b| b.cmp(a));
+            }
+
+            // Calculate the range to replace
+            let range_start = self.content.line_to_char(start_row);
+            let range_end = if end_row + 1 < self.content.len_lines() {
+                self.content.line_to_char(end_row + 1)
+            } else {
+                self.content.len_chars()
+            };
+
+            // Remove the old lines
+            self.content.remove(range_start..range_end);
+
+            // Insert the sorted lines
+            let sorted_content = lines.join("");
+            self.content.insert(range_start, &sorted_content);
+
+            self.modified = true;
+        }
+    }
 }

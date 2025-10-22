@@ -305,6 +305,67 @@ impl App {
             (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
                 self.show_sidebar = !self.show_sidebar;
             }
+            // Line operations
+            (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
+                // Duplicate line
+                if let Some(split_manager) = &mut self.split_manager {
+                    if let Some(pane) = split_manager.get_active_pane() {
+                        let buffer_index = pane.buffer_index;
+                        let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                        buffer.duplicate_line();
+                        pane.adjust_viewport(buffer.cursor_position.0);
+                    }
+                } else {
+                    self.buffer_manager.current_mut().duplicate_line();
+                    self.update_viewport();
+                }
+                self.status_message = String::from("Line duplicated");
+            }
+            (KeyCode::Char('j'), KeyModifiers::CONTROL) => {
+                // Join lines
+                if let Some(split_manager) = &mut self.split_manager {
+                    if let Some(pane) = split_manager.get_active_pane() {
+                        let buffer_index = pane.buffer_index;
+                        let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                        buffer.join_lines();
+                        pane.adjust_viewport(buffer.cursor_position.0);
+                    }
+                } else {
+                    self.buffer_manager.current_mut().join_lines();
+                    self.update_viewport();
+                }
+                self.status_message = String::from("Lines joined");
+            }
+            (KeyCode::Up, KeyModifiers::ALT) => {
+                // Move line up
+                if let Some(split_manager) = &mut self.split_manager {
+                    if let Some(pane) = split_manager.get_active_pane() {
+                        let buffer_index = pane.buffer_index;
+                        let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                        buffer.move_line_up();
+                        pane.adjust_viewport(buffer.cursor_position.0);
+                    }
+                } else {
+                    self.buffer_manager.current_mut().move_line_up();
+                    self.update_viewport();
+                }
+                self.status_message = String::from("Line moved up");
+            }
+            (KeyCode::Down, KeyModifiers::ALT) => {
+                // Move line down
+                if let Some(split_manager) = &mut self.split_manager {
+                    if let Some(pane) = split_manager.get_active_pane() {
+                        let buffer_index = pane.buffer_index;
+                        let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                        buffer.move_line_down();
+                        pane.adjust_viewport(buffer.cursor_position.0);
+                    }
+                } else {
+                    self.buffer_manager.current_mut().move_line_down();
+                    self.update_viewport();
+                }
+                self.status_message = String::from("Line moved down");
+            }
             // Split view commands (Ctrl+W followed by another key)
             (KeyCode::Char('w'), KeyModifiers::CONTROL) => {
                 // Store 'w' as the last key to wait for next command
@@ -1128,6 +1189,44 @@ impl App {
             "ls" | "buffers" => {
                 let buffer_list = self.buffer_manager.get_buffer_list();
                 self.status_message = format!("Buffers: {}", buffer_list.join(", "));
+            }
+            "sort" => {
+                // Sort selected lines in ascending order
+                if self.buffer_manager.current().has_selection() {
+                    if let Some(split_manager) = &mut self.split_manager {
+                        if let Some(pane) = split_manager.get_active_pane() {
+                            let buffer_index = pane.buffer_index;
+                            let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                            buffer.sort_selected_lines(true);
+                            pane.adjust_viewport(buffer.cursor_position.0);
+                        }
+                    } else {
+                        self.buffer_manager.current_mut().sort_selected_lines(true);
+                        self.update_viewport();
+                    }
+                    self.status_message = String::from("Lines sorted (ascending)");
+                } else {
+                    self.status_message = String::from("No selection - select lines to sort");
+                }
+            }
+            "sort!" => {
+                // Sort selected lines in descending order
+                if self.buffer_manager.current().has_selection() {
+                    if let Some(split_manager) = &mut self.split_manager {
+                        if let Some(pane) = split_manager.get_active_pane() {
+                            let buffer_index = pane.buffer_index;
+                            let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                            buffer.sort_selected_lines(false);
+                            pane.adjust_viewport(buffer.cursor_position.0);
+                        }
+                    } else {
+                        self.buffer_manager.current_mut().sort_selected_lines(false);
+                        self.update_viewport();
+                    }
+                    self.status_message = String::from("Lines sorted (descending)");
+                } else {
+                    self.status_message = String::from("No selection - select lines to sort");
+                }
             }
             _ => {
                 self.status_message = format!("Unknown command: {}", parts[0]);
