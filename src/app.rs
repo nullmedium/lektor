@@ -9,12 +9,13 @@ use anyhow::Result;
 use arboard::Clipboard;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind, MouseButton};
 use git2::Repository;
+use ropey::Rope;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -299,6 +300,97 @@ impl App {
             split_manager.previous_pane();
             self.status_message = format!("Switched to pane {}", split_manager.active_pane_index + 1);
         }
+    }
+
+    pub fn show_diff_view(&mut self) -> Result<()> {
+        // Get the current file path
+        let current_buffer_index = if let Some(split_manager) = &self.split_manager {
+            split_manager.get_active_buffer_index().unwrap_or(self.buffer_manager.current_index)
+        } else {
+            self.buffer_manager.current_index
+        };
+
+        let file_path = match &self.buffer_manager.buffers[current_buffer_index].file_path {
+            Some(path) => path.clone(),
+            None => {
+                self.status_message = String::from("No file to diff - save the file first");
+                return Ok(());
+            }
+        };
+
+        // Get HEAD version of the file
+        let head_content = self.get_file_from_head(&file_path)?;
+
+        if head_content.is_none() {
+            self.status_message = String::from("File not in git repository or not committed");
+            return Ok(());
+        }
+
+        let head_content = head_content.unwrap();
+
+        // Create a new buffer for HEAD version with special name
+        let head_buffer_name = format!("{} (HEAD)", file_path.display());
+        let mut head_buffer = TextBuffer::new();
+        head_buffer.content = Rope::from_str(&head_content);
+        head_buffer.file_path = Some(PathBuf::from(&head_buffer_name));
+        head_buffer.modified = false;
+
+        // Add the HEAD buffer
+        self.buffer_manager.buffers.push(head_buffer);
+        let head_buffer_index = self.buffer_manager.buffers.len() - 1;
+
+        // Initialize split manager if needed
+        if self.split_manager.is_none() {
+            let terminal_size = crossterm::terminal::size()?;
+            let sidebar_width = if self.show_sidebar { self.config.sidebar.width } else { 0 };
+            self.split_manager = Some(SplitManager::new(
+                current_buffer_index,
+                terminal_size.0,
+                terminal_size.1.saturating_sub(2),
+                sidebar_width,
+            ));
+        }
+
+        // Create vertical split for side-by-side diff
+        if let Some(split_manager) = &mut self.split_manager {
+            split_manager.split_current(SplitDirection::Vertical, head_buffer_index);
+            self.status_message = format!("Diff view: {} | {} (HEAD)", file_path.display(), file_path.display());
+        }
+
+        Ok(())
+    }
+
+    fn get_file_from_head(&self, file_path: &Path) -> Result<Option<String>> {
+        // Try to open git repository
+        let repo = match Repository::open(".") {
+            Ok(repo) => repo,
+            Err(_) => return Ok(None),
+        };
+
+        // Get HEAD commit
+        let head = match repo.head() {
+            Ok(head) => head,
+            Err(_) => return Ok(None),
+        };
+
+        let oid = head.target().ok_or_else(|| anyhow::anyhow!("HEAD has no target"))?;
+        let commit = repo.find_commit(oid)?;
+        let tree = commit.tree()?;
+
+        // Get relative path from repository root
+        let repo_path = repo.workdir().ok_or_else(|| anyhow::anyhow!("No workdir"))?;
+        let relative_path = file_path.strip_prefix(repo_path).unwrap_or(file_path);
+
+        // Find the file in the tree
+        let entry = match tree.get_path(relative_path) {
+            Ok(entry) => entry,
+            Err(_) => return Ok(None), // File not in HEAD
+        };
+
+        let object = repo.find_blob(entry.id())?;
+        let content = std::str::from_utf8(object.content())?.to_string();
+
+        Ok(Some(content))
     }
 
     pub fn save_file(&mut self) -> Result<()> {
@@ -616,6 +708,11 @@ impl App {
                 self.split_vertical()?;
                 self.last_key = None;
             }
+            (KeyCode::Char('d'), KeyModifiers::NONE) if matches!(self.last_key, Some(KeyCode::Char('w'))) => {
+                // Diff view - show current file vs HEAD
+                self.show_diff_view()?;
+                self.last_key = None;
+            }
             (KeyCode::Char('w'), KeyModifiers::NONE) if matches!(self.last_key, Some(KeyCode::Char('w'))) => {
                 // Cycle through panes
                 self.next_pane();
@@ -666,8 +763,8 @@ impl App {
                 self.previous_pane();
                 self.last_key = None;
             }
-            // Vim-style dd command (delete line)
-            (KeyCode::Char('d'), KeyModifiers::NONE) => {
+            // Vim-style dd command (delete line) - but not if 'w' was pressed
+            (KeyCode::Char('d'), KeyModifiers::NONE) if !matches!(self.last_key, Some(KeyCode::Char('w'))) => {
                 // Check if the last key was also 'd' for dd command
                 if matches!(self.last_key, Some(KeyCode::Char('d'))) {
                     // Delete the current line
@@ -678,8 +775,8 @@ impl App {
                     }
                     self.status_message = String::from("Line deleted");
                     self.last_key = None; // Reset
-                } else if !matches!(self.last_key, Some(KeyCode::Char('w'))) {
-                    // Only set 'd' as last key if we're not in the middle of a Ctrl+W command
+                } else {
+                    // Set 'd' as last key for next 'd' to complete dd
                     self.last_key = Some(KeyCode::Char('d'));
                     self.status_message = String::from("d");
                 }
@@ -1380,6 +1477,10 @@ impl App {
                 } else {
                     self.status_message = String::from("No filename provided. Use :wq filename");
                 }
+            }
+            "diff" | "wd" => {
+                // Show diff view comparing current file to HEAD
+                self.show_diff_view()?;
             }
             "e" | "edit" if parts.len() > 1 => {
                 let path = PathBuf::from(parts[1]);
