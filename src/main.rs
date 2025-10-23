@@ -92,20 +92,34 @@ fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
 ) -> Result<()> {
-    loop {
-        terminal.draw(|f| {
-            app.draw(f);
-        })?;
+    // Draw initial screen
+    terminal.draw(|f| {
+        app.draw(f);
+    })?;
 
-        if event::poll(Duration::from_millis(100))? {
-            match event::read()? {
+    loop {
+        // Block waiting for events with a timeout
+        // This prevents busy-waiting and reduces CPU usage
+        if event::poll(Duration::from_millis(250))? {
+            let should_redraw = match event::read()? {
                 Event::Key(key) => {
                     app.handle_key_event(key)?;
+                    true // Redraw after key events
                 }
                 Event::Mouse(mouse) => {
                     app.handle_mouse_event(mouse)?;
+                    true // Redraw after mouse events
                 }
-                _ => {}
+                Event::Resize(_, _) => {
+                    true // Redraw after terminal resize
+                }
+                _ => false // Don't redraw for other events
+            };
+
+            if should_redraw {
+                terminal.draw(|f| {
+                    app.draw(f);
+                })?;
             }
         }
 

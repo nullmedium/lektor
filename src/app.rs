@@ -62,11 +62,7 @@ impl App {
     }
 
     fn update_git_cache(&mut self) {
-        // Only update cache if more than 1 second has passed
-        if self.git_cache_timestamp.elapsed() < Duration::from_secs(1) {
-            return;
-        }
-
+        // Update git cache immediately without time check
         self.git_cache_timestamp = Instant::now();
 
         if let Some(ref repo) = self.git_repo {
@@ -180,6 +176,9 @@ impl App {
     pub fn open_file(&mut self, path: &PathBuf) -> Result<()> {
         self.buffer_manager.open_file(path, &self.syntax_highlighter)?;
         self.status_message = format!("Opened: {}", path.display());
+
+        // Update git cache when opening a file
+        self.update_git_cache();
 
         // Don't initialize split_manager here - only when actually splitting
 
@@ -316,8 +315,7 @@ impl App {
                 String::from("Buffer saved")
             };
 
-            // Force git cache update after saving
-            self.git_cache_timestamp = Instant::now().checked_sub(Duration::from_secs(2)).unwrap_or(Instant::now());
+            // Update git cache after saving
             self.update_git_cache();
 
             // Refresh sidebar after saving to update Git status
@@ -505,6 +503,15 @@ impl App {
                 self.search_matches.clear();
                 let case_mode = if self.case_sensitive { "Case" } else { "Ignore case" };
                 self.status_message = format!("Search [{}]: ", case_mode);
+            }
+            (KeyCode::Char('/'), KeyModifiers::CONTROL) |
+            (KeyCode::Char('_'), KeyModifiers::CONTROL) |
+            (KeyCode::Char('/'), KeyModifiers::ALT) |
+            (KeyCode::Char('7'), KeyModifiers::CONTROL) => {
+                // Toggle comment for current line or selection
+                // Multiple keybindings for terminal compatibility:
+                // Ctrl+/ (standard), Ctrl+_ (some terminals), Alt+/ (alternative), Ctrl+7 (some mappings)
+                self.toggle_comment();
             }
             (KeyCode::Char('h'), KeyModifiers::CONTROL) => {
                 self.mode = Mode::Replace;
@@ -794,6 +801,7 @@ impl App {
                             // Check if ".." is selected (parent directory)
                             if sidebar.is_parent_selected() {
                                 sidebar.navigate_to_parent()?;
+                                self.update_git_cache();
                                 return Ok(());
                             }
 
@@ -813,6 +821,8 @@ impl App {
                                 } else {
                                     if let Some(sidebar) = &mut self.sidebar {
                                         sidebar.toggle_expanded()?;
+                                        // Update git cache when navigating into directories
+                                        self.update_git_cache();
                                     }
                                 }
                             }
@@ -903,6 +913,22 @@ impl App {
                     self.status_message = String::from("Nothing to redo");
                 }
             }
+            // Comment toggling with Ctrl+/
+            (KeyCode::Char('/'), KeyModifiers::CONTROL) => {
+                self.toggle_comment();
+            }
+            // Some terminals send Ctrl+/ as Ctrl+_ (ASCII 31)
+            (KeyCode::Char('_'), KeyModifiers::CONTROL) => {
+                self.toggle_comment();
+            }
+            // Alternative: Alt+/ for terminals where Ctrl+/ doesn't work
+            (KeyCode::Char('/'), KeyModifiers::ALT) => {
+                self.toggle_comment();
+            }
+            // Also try Ctrl+7 (some terminals map this)
+            (KeyCode::Char('7'), KeyModifiers::CONTROL) => {
+                self.toggle_comment();
+            }
             // Selection with Shift+Arrow keys in insert mode
             (KeyCode::Left, KeyModifiers::SHIFT) => {
                 if self.buffer_manager.current().selection.is_none() {
@@ -936,6 +962,17 @@ impl App {
             }
             // Typing replaces selection
             (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                // Auto-close brackets and quotes
+                let auto_close_char = match c {
+                    '(' => Some(')'),
+                    '[' => Some(']'),
+                    '{' => Some('}'),
+                    '"' => Some('"'),
+                    '\'' => Some('\''),
+                    '`' => Some('`'),
+                    _ => None,
+                };
+
                 if let Some(split_manager) = &mut self.split_manager {
                     if let Some(pane) = split_manager.get_active_pane() {
                             let buffer_index = pane.buffer_index;
@@ -944,6 +981,27 @@ impl App {
                         let buffer = &mut self.buffer_manager.buffers[buffer_index];
                         buffer.delete_selection();
                         buffer.insert_char(c);
+
+                        // Auto-close if applicable
+                        if let Some(close_char) = auto_close_char {
+                            // For quotes, only auto-close if not already inside quotes
+                            if matches!(c, '"' | '\'' | '`') {
+                                // Simple heuristic: only auto-close if there's whitespace or nothing after cursor
+                                let (row, col) = buffer.cursor_position;
+                                let line = buffer.content.line(row);
+                                if col >= line.len_chars() || line.char(col) == ' ' || line.char(col) == '\n' {
+                                    let cursor_pos = buffer.cursor_position;
+                                    buffer.insert_char(close_char);
+                                    buffer.cursor_position = cursor_pos; // Move cursor back between the quotes
+                                }
+                            } else {
+                                // Always auto-close brackets
+                                let cursor_pos = buffer.cursor_position;
+                                buffer.insert_char(close_char);
+                                buffer.cursor_position = cursor_pos; // Move cursor back between the brackets
+                            }
+                        }
+
                         pane.cursor_x = buffer.cursor_position.1;
                         pane.cursor_y = buffer.cursor_position.0;
                         pane.adjust_viewport(buffer.cursor_position.0);
@@ -951,17 +1009,55 @@ impl App {
                 } else {
                     self.buffer_manager.current_mut().delete_selection();
                     self.buffer_manager.current_mut().insert_char(c);
+
+                    // Auto-close if applicable
+                    if let Some(close_char) = auto_close_char {
+                        // For quotes, only auto-close if not already inside quotes
+                        if matches!(c, '"' | '\'' | '`') {
+                            // Simple heuristic: only auto-close if there's whitespace or nothing after cursor
+                            let buffer = self.buffer_manager.current();
+                            let (row, col) = buffer.cursor_position;
+                            let line = buffer.content.line(row);
+                            if col >= line.len_chars() || line.char(col) == ' ' || line.char(col) == '\n' {
+                                let cursor_pos = self.buffer_manager.current().cursor_position;
+                                self.buffer_manager.current_mut().insert_char(close_char);
+                                self.buffer_manager.current_mut().cursor_position = cursor_pos; // Move cursor back between the quotes
+                            }
+                        } else {
+                            // Always auto-close brackets
+                            let cursor_pos = self.buffer_manager.current().cursor_position;
+                            self.buffer_manager.current_mut().insert_char(close_char);
+                            self.buffer_manager.current_mut().cursor_position = cursor_pos; // Move cursor back between the brackets
+                        }
+                    }
                 }
             }
             (KeyCode::Enter, _) => {
+                // Get indentation before any mutable borrows
+                let indent = if let Some(split_manager) = &self.split_manager {
+                    if let Some(index) = split_manager.get_active_buffer_index() {
+                        let buffer = &self.buffer_manager.buffers[index];
+                        self.get_smart_indent(buffer)
+                    } else {
+                        0
+                    }
+                } else {
+                    let buffer = self.buffer_manager.current();
+                    self.get_smart_indent(buffer)
+                };
+
+                // Now apply the changes
                 if let Some(split_manager) = &mut self.split_manager {
                     if let Some(pane) = split_manager.get_active_pane() {
-                            let buffer_index = pane.buffer_index;
-                            let buffer = &mut self.buffer_manager.buffers[buffer_index];
-                        let buffer_index = buffer_index;
-                        let buffer = &mut self.buffer_manager.buffers[buffer_index];
+                        let buffer = &mut self.buffer_manager.buffers[pane.buffer_index];
                         buffer.delete_selection();
                         buffer.insert_char('\n');
+
+                        // Apply smart indentation
+                        for _ in 0..indent {
+                            buffer.insert_char(' ');
+                        }
+
                         pane.cursor_x = buffer.cursor_position.1;
                         pane.cursor_y = buffer.cursor_position.0;
                         pane.adjust_viewport(buffer.cursor_position.0);
@@ -969,6 +1065,10 @@ impl App {
                 } else {
                     self.buffer_manager.current_mut().delete_selection();
                     self.buffer_manager.current_mut().insert_char('\n');
+
+                    for _ in 0..indent {
+                        self.buffer_manager.current_mut().insert_char(' ');
+                    }
                 }
             }
             (KeyCode::Backspace, _) => {
@@ -1145,11 +1245,20 @@ impl App {
     }
 
     fn handle_visual_mode(&mut self, key: KeyEvent) -> Result<()> {
-        match key.code {
-            KeyCode::Esc => {
+        match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) => {
                 self.mode = Mode::Normal;
                 self.status_message.clear();
                 self.buffer_manager.current_mut().selection = None;
+            }
+            (KeyCode::Char('/'), KeyModifiers::CONTROL) |
+            (KeyCode::Char('_'), KeyModifiers::CONTROL) |
+            (KeyCode::Char('/'), KeyModifiers::ALT) |
+            (KeyCode::Char('7'), KeyModifiers::CONTROL) => {
+                // Toggle comment for selection
+                // Multiple keybindings for terminal compatibility
+                self.toggle_comment();
+                // Stay in visual mode to allow further operations
             }
             _ => {}
         }
@@ -1807,6 +1916,7 @@ impl App {
                                     }
                                     crate::sidebar::SidebarItem::Parent => {
                                         sidebar.navigate_to_parent()?;
+                                        self.update_git_cache();
                                     }
                                 }
                             }
@@ -1949,8 +2059,7 @@ impl App {
     }
 
     pub fn draw(&mut self, frame: &mut Frame) {
-        // Update git cache periodically (max once per second)
-        self.update_git_cache();
+        // Don't update git cache on every draw - it's too expensive
 
         let _theme = self.theme_manager.get_current_theme();
         let size = frame.area();
@@ -2728,5 +2837,228 @@ impl App {
                 .bg(hex_to_color(&theme.ui.background)));
 
         frame.render_widget(message, area);
+    }
+
+    // Smart editing helper methods
+    fn get_smart_indent(&self, buffer: &TextBuffer) -> usize {
+        let (row, _) = buffer.cursor_position;
+
+        // If we're on the first line, no indentation
+        if row == 0 {
+            return 0;
+        }
+
+        // Get the previous line's content
+        let prev_line = buffer.get_line(row.saturating_sub(1));
+
+        // Count leading spaces/tabs
+        let mut indent = 0;
+        for ch in prev_line.chars() {
+            if ch == ' ' {
+                indent += 1;
+            } else if ch == '\t' {
+                indent += self.config.editor.tab_width;
+            } else {
+                break;
+            }
+        }
+
+        // Check if previous line ends with opening brace/bracket for language-aware indentation
+        let trimmed = prev_line.trim_end();
+        if trimmed.ends_with('{') || trimmed.ends_with('[') || trimmed.ends_with('(') {
+            // Check for language-specific rules
+            if let Some(path) = &buffer.file_path {
+                if let Some(syntax) = self.syntax_highlighter.detect_syntax(path) {
+                    let lang = syntax.name.to_lowercase();
+                    // Add extra indentation for block start
+                    if matches!(lang.as_str(), "rust" | "c" | "c++" | "java" | "javascript" | "typescript" | "go" | "python") {
+                        indent += self.config.editor.tab_width;
+                    }
+                }
+            } else {
+                // Default to adding indentation for any opening brace
+                indent += self.config.editor.tab_width;
+            }
+        }
+
+        // Check for Python-style colon (simple heuristic)
+        if trimmed.ends_with(':') {
+            if let Some(path) = &buffer.file_path {
+                if let Some(syntax) = self.syntax_highlighter.detect_syntax(path) {
+                    if syntax.name.to_lowercase() == "python" {
+                        indent += self.config.editor.tab_width;
+                    }
+                }
+            }
+        }
+
+        indent
+    }
+
+    fn toggle_comment(&mut self) {
+        // Get buffer index and comment syntax first
+        let (buffer_index, comment_syntax, has_selection) = if let Some(split_manager) = &self.split_manager {
+            if let Some(index) = split_manager.get_active_buffer_index() {
+                let buffer = &self.buffer_manager.buffers[index];
+                let syntax = self.get_comment_syntax_for_buffer(buffer);
+                let has_sel = buffer.has_selection();
+                (index, syntax, has_sel)
+            } else {
+                return;
+            }
+        } else {
+            let index = self.buffer_manager.current_index;
+            let buffer = &self.buffer_manager.buffers[index];
+            let syntax = self.get_comment_syntax_for_buffer(buffer);
+            let has_sel = buffer.has_selection();
+            (index, syntax, has_sel)
+        };
+
+        // Now modify the buffer
+        let buffer = &mut self.buffer_manager.buffers[buffer_index];
+
+        if has_selection {
+            // Toggle comments for selected lines
+            Self::toggle_block_comment_impl(buffer, &comment_syntax);
+            self.status_message = String::from("Block comment toggled");
+        } else {
+            // Toggle comment for current line
+            let is_commented = Self::toggle_line_comment_impl(buffer, &comment_syntax);
+            self.status_message = if is_commented {
+                String::from("Line commented")
+            } else {
+                String::from("Line uncommented")
+            };
+        }
+    }
+
+    fn get_comment_syntax_for_buffer(&self, buffer: &TextBuffer) -> String {
+        if let Some(path) = &buffer.file_path {
+            if let Some(syntax) = self.syntax_highlighter.detect_syntax(path) {
+                match syntax.name.to_lowercase().as_str() {
+                    "rust" | "c" | "c++" | "java" | "javascript" | "typescript" | "go" => "//",
+                    "python" | "ruby" | "shell" | "bash" | "yaml" | "toml" => "#",
+                    "html" | "xml" => "<!--",
+                    "css" | "scss" | "less" => "/*",
+                    "sql" => "--",
+                    "lua" => "--",
+                    "vim" => "\"",
+                    _ => "//"
+                }.to_string()
+            } else {
+                "//".to_string()
+            }
+        } else {
+            "//".to_string()
+        }
+    }
+
+    fn toggle_line_comment_impl(buffer: &mut TextBuffer, comment_syntax: &str) -> bool {
+        let (row, _) = buffer.cursor_position;
+        let line = buffer.get_line(row);
+
+        // Check if line is already commented
+        let trimmed = line.trim_start();
+        let is_commented = trimmed.starts_with(comment_syntax);
+
+        let line_start_idx = buffer.content.line_to_char(row);
+
+        if is_commented {
+            // Remove comment
+            let spaces_before = line.len() - trimmed.len();
+            let remove_start = line_start_idx + spaces_before;
+            let remove_end = remove_start + comment_syntax.len();
+
+            // Also remove a space after comment if present
+            let remove_end = if buffer.content.get_char(remove_end) == Some(' ') {
+                remove_end + 1
+            } else {
+                remove_end
+            };
+
+            buffer.content.remove(remove_start..remove_end);
+
+            // Adjust cursor position if needed
+            if buffer.cursor_position.1 > spaces_before {
+                let removed_len = remove_end - remove_start;
+                buffer.cursor_position.1 = buffer.cursor_position.1.saturating_sub(removed_len);
+            }
+        } else {
+            // Add comment at the beginning of the line (after leading whitespace)
+            let spaces_before = line.len() - trimmed.len();
+            let insert_pos = line_start_idx + spaces_before;
+            let comment_str = format!("{} ", comment_syntax);
+
+            buffer.content.insert(insert_pos, &comment_str);
+
+            // Adjust cursor position
+            if buffer.cursor_position.1 >= spaces_before {
+                buffer.cursor_position.1 += comment_str.len();
+            }
+        }
+
+        buffer.modified = true;
+        !is_commented  // Return true if we added a comment, false if we removed one
+    }
+
+    fn toggle_block_comment_impl(buffer: &mut TextBuffer, comment_syntax: &str) {
+        if let Some(ref selection) = buffer.selection.clone() {
+            let start_line = selection.start.0;
+            let end_line = selection.end.0;
+
+            // Check if all lines are commented
+            let mut all_commented = true;
+            for line_num in start_line..=end_line {
+                let line = buffer.get_line(line_num);
+                let trimmed = line.trim_start();
+                if !trimmed.is_empty() && !trimmed.starts_with(comment_syntax) {
+                    all_commented = false;
+                    break;
+                }
+            }
+
+            // Toggle comments for each line in reverse order to maintain indices
+            for line_num in (start_line..=end_line).rev() {
+                let line = buffer.get_line(line_num);
+                let trimmed = line.trim_start();
+
+                // Skip empty lines
+                if trimmed.is_empty() {
+                    continue;
+                }
+
+                let line_start_idx = buffer.content.line_to_char(line_num);
+                let spaces_before = line.len() - trimmed.len();
+
+                if all_commented {
+                    // Remove comment
+                    let remove_start = line_start_idx + spaces_before;
+                    let remove_end = remove_start + comment_syntax.len();
+
+                    // Also remove a space after comment if present
+                    let remove_end = if buffer.content.get_char(remove_end) == Some(' ') {
+                        remove_end + 1
+                    } else {
+                        remove_end
+                    };
+
+                    buffer.content.remove(remove_start..remove_end);
+                } else {
+                    // Add comment
+                    let insert_pos = line_start_idx + spaces_before;
+                    let comment_str = format!("{} ", comment_syntax);
+                    buffer.content.insert(insert_pos, &comment_str);
+                }
+            }
+
+            // Maintain selection after commenting
+            buffer.clear_selection();
+            buffer.cursor_position = (start_line, 0);
+            buffer.start_selection();
+            buffer.cursor_position = (end_line, buffer.get_line(end_line).len());
+            buffer.update_selection();
+
+            buffer.modified = true;
+        }
     }
 }

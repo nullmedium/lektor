@@ -1,4 +1,3 @@
-use crate::buffer::TextBuffer as Buffer;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SplitDirection {
@@ -172,6 +171,17 @@ impl SplitNode {
             }
         }
     }
+
+    pub fn get_all_panes_immutable(&self) -> Vec<&Pane> {
+        match self {
+            SplitNode::Leaf(pane) => vec![pane],
+            SplitNode::Split { first, second, .. } => {
+                let mut panes = first.get_all_panes_immutable();
+                panes.extend(second.get_all_panes_immutable());
+                panes
+            }
+        }
+    }
 }
 
 pub struct SplitManager {
@@ -207,6 +217,15 @@ impl SplitManager {
         let mut panes = self.root.get_all_panes();
         if self.active_pane_index < panes.len() {
             Some(panes.swap_remove(self.active_pane_index))
+        } else {
+            None
+        }
+    }
+
+    pub fn get_active_buffer_index(&self) -> Option<usize> {
+        let panes = self.root.get_all_panes_immutable();
+        if self.active_pane_index < panes.len() {
+            Some(panes[self.active_pane_index].buffer_index)
         } else {
             None
         }
