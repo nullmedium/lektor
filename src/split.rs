@@ -257,6 +257,10 @@ impl SplitManager {
         self.root.get_all_panes().len()
     }
 
+    pub fn get_pane_count(&self) -> usize {
+        self.root.get_all_panes_immutable().len()
+    }
+
     pub fn handle_click(&mut self, x: u16, y: u16) -> bool {
         let panes = self.root.get_all_panes();
         for (index, pane) in panes.into_iter().enumerate() {

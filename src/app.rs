@@ -55,6 +55,16 @@ pub struct App {
     git_branch: Option<String>,
     git_status_cache: Option<(usize, usize)>, // (staged, modified)
     git_cache_timestamp: std::time::Instant,
+    diff_info: Option<DiffInfo>, // Track diff information for highlighting
+}
+
+#[derive(Debug, Clone)]
+pub struct DiffInfo {
+    pub head_buffer_index: usize,
+    pub working_buffer_index: usize,
+    pub added_lines: Vec<usize>,    // Lines added in working version
+    pub deleted_lines: Vec<usize>,  // Lines deleted from HEAD version
+    pub modified_lines: Vec<usize>, // Lines modified in working version
 }
 
 impl App {
@@ -171,6 +181,7 @@ impl App {
             git_branch,
             git_status_cache,
             git_cache_timestamp: Instant::now(),
+            diff_info: None,
         })
     }
 
@@ -302,6 +313,104 @@ impl App {
         }
     }
 
+    fn compute_diff(&self, head_lines: Vec<&str>, working_lines: Vec<&str>) -> DiffInfo {
+        let mut added_lines = Vec::new();
+        let mut deleted_lines = Vec::new();
+        let mut modified_lines = Vec::new();
+
+        // Use a simple LCS-based approach
+        let mut i = 0;
+        let mut j = 0;
+
+        while i < head_lines.len() || j < working_lines.len() {
+            if i >= head_lines.len() {
+                // All remaining lines in working are additions
+                added_lines.push(j);
+                j += 1;
+            } else if j >= working_lines.len() {
+                // All remaining lines in HEAD are deletions
+                deleted_lines.push(i);
+                i += 1;
+            } else if head_lines[i] == working_lines[j] {
+                // Lines match, move both pointers
+                i += 1;
+                j += 1;
+            } else {
+                // Look ahead to determine if this is add/delete or modification
+                let mut found_in_working = None;
+                let mut found_in_head = None;
+
+                // Look for current head line in next few working lines
+                for k in (j + 1)..((j + 5).min(working_lines.len())) {
+                    if head_lines[i] == working_lines[k] {
+                        found_in_working = Some(k);
+                        break;
+                    }
+                }
+
+                // Look for current working line in next few head lines
+                for k in (i + 1)..((i + 5).min(head_lines.len())) {
+                    if head_lines[k] == working_lines[j] {
+                        found_in_head = Some(k);
+                        break;
+                    }
+                }
+
+                match (found_in_working, found_in_head) {
+                    (Some(k), _) => {
+                        // Current head line found ahead in working
+                        // Lines j to k-1 in working are additions
+                        for add_idx in j..k {
+                            added_lines.push(add_idx);
+                        }
+                        j = k;
+                    }
+                    (None, Some(k)) => {
+                        // Current working line found ahead in head
+                        // Lines i to k-1 in head are deletions
+                        for del_idx in i..k {
+                            deleted_lines.push(del_idx);
+                        }
+                        i = k;
+                    }
+                    (None, None) => {
+                        // No match found, treat as modification
+                        modified_lines.push(j);
+                        i += 1;
+                        j += 1;
+                    }
+                }
+            }
+        }
+
+        DiffInfo {
+            head_buffer_index: 0, // Will be set later
+            working_buffer_index: 0, // Will be set later
+            added_lines,
+            deleted_lines,
+            modified_lines,
+        }
+    }
+
+    pub fn close_current_pane(&mut self) {
+        if let Some(split_manager) = &mut self.split_manager {
+            // If there's only one pane, close the entire split view
+            if split_manager.get_pane_count() <= 1 {
+                self.split_manager = None;
+                self.diff_info = None;  // Clear diff info when closing split
+                self.status_message = String::from("Split view closed");
+            } else {
+                // Close just the current pane (not implemented yet in split_manager)
+                // For now, just close all splits
+                self.split_manager = None;
+                self.diff_info = None;  // Clear diff info when closing split
+                self.status_message = String::from("Split view closed");
+            }
+        } else {
+            self.status_message = String::from("No split to close");
+        }
+    }
+
     pub fn show_diff_view(&mut self) -> Result<()> {
         // Get the current file path
         let current_buffer_index = if let Some(split_manager) = &self.split_manager {
@@ -328,6 +437,14 @@ impl App {
 
         let head_content = head_content.unwrap();
 
+        // Get working version content
+        let working_content = self.buffer_manager.buffers[current_buffer_index].content.to_string();
+
+        // Compute diff
+        let head_lines: Vec<&str> = head_content.lines().collect();
+        let working_lines: Vec<&str> = working_content.lines().collect();
+        let mut diff_info = self.compute_diff(head_lines, working_lines);
+
         // Create a new buffer for HEAD version with special name
         let head_buffer_name = format!("{} (HEAD)", file_path.display());
         let mut head_buffer = TextBuffer::new();
@@ -338,6 +455,13 @@ impl App {
         // Add the HEAD buffer
         self.buffer_manager.buffers.push(head_buffer);
         let head_buffer_index = self.buffer_manager.buffers.len() - 1;
+
+        // Update diff info with buffer indices
+        diff_info.head_buffer_index = head_buffer_index;
+        diff_info.working_buffer_index = current_buffer_index;
+
+        // Store diff info
+        self.diff_info = Some(diff_info);
 
         // Initialize split manager if needed
         if self.split_manager.is_none() {
@@ -361,8 +485,15 @@ impl App {
     }
 
     fn get_file_from_head(&self, file_path: &Path) -> Result<Option<String>> {
-        // Try to open git repository
-        let repo = match Repository::open(".") {
+        // Get the absolute path of the file
+        let abs_file_path = if file_path.is_absolute() {
+            file_path.to_path_buf()
+        } else {
+            std::env::current_dir()?.join(file_path)
+        };
+
+        // Try to discover git repository from the file's location
+        let repo = match Repository::discover(&abs_file_path) {
             Ok(repo) => repo,
             Err(_) => return Ok(None),
         };
@@ -379,7 +510,13 @@ impl App {
 
         // Get relative path from repository root
         let repo_path = repo.workdir().ok_or_else(|| anyhow::anyhow!("No workdir"))?;
-        let relative_path = file_path.strip_prefix(repo_path).unwrap_or(file_path);
+        let relative_path = match abs_file_path.strip_prefix(repo_path) {
+            Ok(rel) => rel,
+            Err(_) => {
+                // File is outside repository
+                return Ok(None);
+            }
+        };
 
         // Find the file in the tree
         let entry = match tree.get_path(relative_path) {
@@ -445,8 +582,8 @@ impl App {
             key.code,
             KeyCode::Char('s') | KeyCode::Char('S') | KeyCode::Char('v') | KeyCode::Char('V') |
             KeyCode::Char('w') | KeyCode::Char('W') | KeyCode::Char('h') | KeyCode::Char('l') |
-            KeyCode::Char('j') | KeyCode::Char('k') | KeyCode::Left | KeyCode::Right |
-            KeyCode::Up | KeyCode::Down
+            KeyCode::Char('j') | KeyCode::Char('k') | KeyCode::Char('q') | KeyCode::Char('d') |
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down
         );
 
         if !should_keep_last_key && !processing_ctrl_w {
@@ -711,6 +848,11 @@ impl App {
             (KeyCode::Char('d'), KeyModifiers::NONE) if matches!(self.last_key, Some(KeyCode::Char('w'))) => {
                 // Diff view - show current file vs HEAD
                 self.show_diff_view()?;
+                self.last_key = None;
+            }
+            (KeyCode::Char('q'), KeyModifiers::NONE) if matches!(self.last_key, Some(KeyCode::Char('w'))) => {
+                // Close current pane/split
+                self.close_current_pane();
                 self.last_key = None;
             }
             (KeyCode::Char('w'), KeyModifiers::NONE) if matches!(self.last_key, Some(KeyCode::Char('w'))) => {
@@ -2431,10 +2573,40 @@ impl App {
             let line_number = pane.viewport_offset + i + 1;
             let mut spans = Vec::new();
 
+            // Check if this line should be highlighted for diff
+            let mut line_bg_color: Option<ratatui::style::Color> = None;
+            if let Some(diff_info) = &self.diff_info {
+                let actual_line_index = pane.viewport_offset + i;
+
+                // Only highlight the working buffer (right side)
+                if pane.buffer_index == diff_info.working_buffer_index {
+                    if diff_info.added_lines.contains(&actual_line_index) {
+                        // Green background for added lines
+                        line_bg_color = Some(ratatui::style::Color::Rgb(20, 50, 20));
+                    } else if diff_info.modified_lines.contains(&actual_line_index) {
+                        // Yellow/amber background for modified lines
+                        line_bg_color = Some(ratatui::style::Color::Rgb(50, 50, 20));
+                    }
+                } else if pane.buffer_index == diff_info.head_buffer_index {
+                    if diff_info.deleted_lines.contains(&actual_line_index) {
+                        // Red background for deleted lines (in HEAD buffer)
+                        line_bg_color = Some(ratatui::style::Color::Rgb(50, 20, 20));
+                    } else if diff_info.modified_lines.contains(&actual_line_index) {
+                        // Yellow/amber background for modified lines (original version)
+                        line_bg_color = Some(ratatui::style::Color::Rgb(50, 50, 20));
+                    }
+                }
+            }
+
             if self.config.editor.show_line_numbers {
+                let line_number_style = if let Some(bg) = line_bg_color {
+                    get_ui_style(theme, "line_numbers").bg(bg)
+                } else {
+                    get_ui_style(theme, "line_numbers")
+                };
                 spans.push(ratatui::text::Span::styled(
                     format!("{:4} ", line_number),
-                    get_ui_style(theme, "line_numbers"),
+                    line_number_style,
                 ));
             }
 
@@ -2551,8 +2723,15 @@ impl App {
                                     }
                                 }
 
-                                // Apply current line highlighting
-                                if is_current_line && self.config.editor.highlight_current_line {
+                                // Apply diff background if present
+                                if let Some(bg) = line_bg_color {
+                                    if !is_matching_bracket && !is_cursor_bracket && !is_trailing_whitespace {
+                                        ratatui_style = ratatui_style.bg(bg);
+                                    }
+                                }
+
+                                // Apply current line highlighting (only if no diff background)
+                                if is_current_line && self.config.editor.highlight_current_line && line_bg_color.is_none() {
                                     if !is_matching_bracket && !is_cursor_bracket && !is_column_ruler {
                                         ratatui_style = ratatui_style.bg(hex_to_color(&theme.ui.current_line));
                                     }
@@ -2581,7 +2760,12 @@ impl App {
                         }
                     } else {
                         // Fallback to simple rendering
-                        spans.push(ratatui::text::Span::raw(line.to_string()));
+                        let span_style = if let Some(bg) = line_bg_color {
+                            Style::default().bg(bg)
+                        } else {
+                            Style::default()
+                        };
+                        spans.push(ratatui::text::Span::styled(line.to_string(), span_style));
                     }
                 }
             } else if buffer.selection.is_some() {
@@ -2614,6 +2798,9 @@ impl App {
                     } else {
                         if is_selected {
                             style = style.bg(hex_to_color(&theme.ui.selection));
+                        } else if let Some(bg) = line_bg_color {
+                            // Apply diff background
+                            style = style.bg(bg);
                         } else if is_current_line && self.config.editor.highlight_current_line {
                             style = style.bg(hex_to_color(&theme.ui.current_line));
                         }
@@ -2653,7 +2840,10 @@ impl App {
                         style = style.fg(ratatui::style::Color::Rgb(60, 60, 60));
                         spans.push(Span::styled("│", style));
                     } else {
-                        if is_current_line && self.config.editor.highlight_current_line {
+                        // Apply diff background if present
+                        if let Some(bg) = line_bg_color {
+                            style = style.bg(bg);
+                        } else if is_current_line && self.config.editor.highlight_current_line {
                             style = style.bg(hex_to_color(&theme.ui.current_line));
                         }
 
