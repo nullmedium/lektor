@@ -2037,49 +2037,115 @@ impl App {
             MouseEventKind::Drag(MouseButton::Left) => {
                 // Handle text selection with mouse drag
                 if !self.show_sidebar || mouse.column >= self.config.sidebar.width {
-                    let editor_col = if self.show_sidebar {
-                        mouse.column.saturating_sub(self.config.sidebar.width + 1)
-                    } else {
-                        mouse.column
-                    } as usize;
+                    if let Some(split_manager) = &mut self.split_manager {
+                        // Handle drag in split panes
+                        if let Some(pane) = split_manager.get_active_pane() {
+                            let col = mouse.column as usize;
+                            let row = mouse.row as usize;
 
-                    let line_number_width = if self.config.editor.show_line_numbers {
-                        let max_line = self.buffer_manager.current().content.len_lines();
-                        format!("{}", max_line).len() + 2
-                    } else {
-                        0
-                    };
+                            // Check if drag is within pane bounds
+                            if col as u16 >= pane.x && (col as u16) < pane.x + pane.width &&
+                               row as u16 >= pane.y && (row as u16) < pane.y + pane.height {
 
-                    let content_col = editor_col.saturating_sub(line_number_width);
-                    // Don't subtract 1 from row - the mouse coordinates are already 0-based
-                    let content_row = (mouse.row as usize) + self.viewport_offset;
+                                let pane_col = (col as u16 - pane.x) as usize;
+                                let pane_row = (row as u16 - pane.y) as usize;
 
-                    let buffer = self.buffer_manager.current_mut();
-                    if content_row < buffer.content.len_lines() {
-                        if buffer.selection.is_none() {
-                            buffer.start_selection();
+                                let line_number_width = if self.config.editor.show_line_numbers {
+                                    5 // Fixed width for line numbers
+                                } else {
+                                    0
+                                };
+
+                                let content_col = pane_col.saturating_sub(line_number_width);
+                                let content_row = pane_row + pane.viewport_offset;
+
+                                let buffer_index = pane.buffer_index;
+                                let buffer = &mut self.buffer_manager.buffers[buffer_index];
+
+                                if content_row < buffer.content.len_lines() {
+                                    if buffer.selection.is_none() {
+                                        buffer.start_selection();
+                                    }
+
+                                    let line = buffer.content.line(content_row);
+                                    let line_len = line.len_chars().saturating_sub(1);
+                                    let actual_col = content_col.min(line_len);
+
+                                    buffer.cursor_position = (content_row, actual_col);
+                                    buffer.update_selection();
+
+                                    // Update pane cursor position
+                                    pane.cursor_x = actual_col;
+                                    pane.cursor_y = content_row;
+                                }
+                            }
                         }
+                    } else {
+                        // Original single-pane drag logic
+                        let editor_col = if self.show_sidebar {
+                            mouse.column.saturating_sub(self.config.sidebar.width + 1)
+                        } else {
+                            mouse.column
+                        } as usize;
 
-                        let line = buffer.content.line(content_row);
-                        let line_len = line.len_chars().saturating_sub(1);
-                        let actual_col = content_col.min(line_len);
+                        let line_number_width = if self.config.editor.show_line_numbers {
+                            let max_line = self.buffer_manager.current().content.len_lines();
+                            format!("{}", max_line).len() + 2
+                        } else {
+                            0
+                        };
 
-                        buffer.cursor_position = (content_row, actual_col);
-                        buffer.update_selection();
+                        let content_col = editor_col.saturating_sub(line_number_width);
+                        // Don't subtract 1 from row - the mouse coordinates are already 0-based
+                        let content_row = (mouse.row as usize) + self.viewport_offset;
+
+                        let buffer = self.buffer_manager.current_mut();
+                        if content_row < buffer.content.len_lines() {
+                            if buffer.selection.is_none() {
+                                buffer.start_selection();
+                            }
+
+                            let line = buffer.content.line(content_row);
+                            let line_len = line.len_chars().saturating_sub(1);
+                            let actual_col = content_col.min(line_len);
+
+                            buffer.cursor_position = (content_row, actual_col);
+                            buffer.update_selection();
+                        }
                     }
                 }
             }
             MouseEventKind::ScrollDown => {
                 // Scroll down
-                let max_offset = self.buffer_manager.current().content.len_lines()
-                    .saturating_sub(10);
-                if self.viewport_offset < max_offset {
-                    self.viewport_offset += 3;
+                if let Some(split_manager) = &mut self.split_manager {
+                    // Handle scrolling in split panes
+                    if let Some(pane) = split_manager.get_active_pane() {
+                        let buffer = &self.buffer_manager.buffers[pane.buffer_index];
+                        let max_offset = buffer.content.len_lines().saturating_sub(10);
+                        if pane.viewport_offset < max_offset {
+                            pane.viewport_offset += 3;
+                        }
+                    }
+                } else {
+                    // Handle scrolling in single editor
+                    let max_offset = self.buffer_manager.current().content.len_lines()
+                        .saturating_sub(10);
+                    if self.viewport_offset < max_offset {
+                        self.viewport_offset += 3;
+                    }
                 }
             }
             MouseEventKind::ScrollUp => {
                 // Scroll up
-                self.viewport_offset = self.viewport_offset.saturating_sub(3);
+                if let Some(split_manager) = &mut self.split_manager {
+                    // Handle scrolling in split panes
+                    if let Some(pane) = split_manager.get_active_pane() {
+                        pane.viewport_offset = pane.viewport_offset.saturating_sub(3);
+                    }
+                } else {
+                    // Handle scrolling in single editor
+                    self.viewport_offset = self.viewport_offset.saturating_sub(3);
+                }
             }
             _ => {}
         }
