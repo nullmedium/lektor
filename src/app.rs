@@ -2162,20 +2162,53 @@ impl App {
 
                 let (first_area, second_area) = match direction {
                     SplitDirection::Horizontal => {
-                        let first_height = (area.height as f32 * *ratio) as u16;
+                        let first_height = ((area.height.saturating_sub(1)) as f32 * *ratio) as u16;
                         (
                             Rect::new(area.x, area.y, area.width, first_height),
-                            Rect::new(area.x, area.y + first_height, area.width, area.height - first_height),
+                            Rect::new(area.x, area.y + first_height + 1, area.width, area.height.saturating_sub(first_height + 1)),
                         )
                     }
                     SplitDirection::Vertical => {
-                        let first_width = (area.width as f32 * *ratio) as u16;
+                        let first_width = ((area.width.saturating_sub(1)) as f32 * *ratio) as u16;
                         (
                             Rect::new(area.x, area.y, first_width, area.height),
-                            Rect::new(area.x + first_width, area.y, area.width - first_width, area.height),
+                            Rect::new(area.x + first_width + 1, area.y, area.width.saturating_sub(first_width + 1), area.height),
                         )
                     }
                 };
+
+                // Draw separator line between panes
+                let _theme = app.theme_manager.get_current_theme();
+                let separator_style = Style::default().fg(ratatui::style::Color::Rgb(60, 60, 60));
+
+                match direction {
+                    SplitDirection::Horizontal => {
+                        // Draw horizontal separator line
+                        let separator_y = area.y + first_area.height;
+                        if separator_y < area.y + area.height {
+                            let line = "─".repeat(area.width as usize);
+                            frame.render_widget(
+                                ratatui::widgets::Paragraph::new(line)
+                                    .style(separator_style),
+                                Rect::new(area.x, separator_y, area.width, 1),
+                            );
+                        }
+                    }
+                    SplitDirection::Vertical => {
+                        // Draw vertical separator line
+                        let separator_x = area.x + first_area.width;
+                        if separator_x < area.x + area.width {
+                            // Create a vertical line by rendering multiple single-line paragraphs
+                            for y in 0..area.height {
+                                frame.render_widget(
+                                    ratatui::widgets::Paragraph::new("│")
+                                        .style(separator_style),
+                                    Rect::new(separator_x, area.y + y, 1, 1),
+                                );
+                            }
+                        }
+                    }
+                }
 
                 // Count panes in first subtree to determine active index for second
                 let first_pane_count = App::count_panes(first);
@@ -2207,28 +2240,14 @@ impl App {
         // Get the buffer from the buffer_manager
         let buffer = &self.buffer_manager.buffers[pane.buffer_index];
 
-        // Draw border around pane
-        let border_style = if is_active {
-            Style::default().fg(ratatui::style::Color::Green)
-        } else {
-            Style::default().fg(ratatui::style::Color::Gray)
-        };
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(border_style);
-
-        let inner_area = block.inner(area);
-        frame.render_widget(block, area);
-
-        // Update pane dimensions
-        pane.x = inner_area.x;
-        pane.y = inner_area.y;
-        pane.width = inner_area.width;
-        pane.height = inner_area.height;
+        // Update pane dimensions (no borders)
+        pane.x = area.x;
+        pane.y = area.y;
+        pane.width = area.width;
+        pane.height = area.height;
 
         // Draw the buffer content with syntax highlighting
-        let viewport_height = inner_area.height as usize;
+        let viewport_height = area.height as usize;
         let lines = buffer.get_visible_lines(pane.viewport_offset, viewport_height);
         let mut paragraph_lines = Vec::new();
 
@@ -2484,8 +2503,9 @@ impl App {
             paragraph_lines.push(ratatui::text::Line::from(spans));
         }
 
-        let paragraph = Paragraph::new(paragraph_lines);
-        frame.render_widget(paragraph, inner_area);
+        let paragraph = Paragraph::new(paragraph_lines)
+            .style(Style::default().bg(hex_to_color(&theme.ui.background)));
+        frame.render_widget(paragraph, area);
 
         // Draw cursor if this is the active pane
         if is_active {
@@ -2494,7 +2514,7 @@ impl App {
             let screen_col = cursor_pos.1 + if self.config.editor.show_line_numbers { 5 } else { 0 };
 
             if screen_row < viewport_height {
-                frame.set_cursor_position((inner_area.x + screen_col as u16, inner_area.y + screen_row as u16));
+                frame.set_cursor_position((area.x + screen_col as u16, area.y + screen_row as u16));
             }
         }
     }
