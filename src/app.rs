@@ -8,12 +8,14 @@ use crate::theme::{get_ui_style, hex_to_color, ThemeManager};
 use anyhow::Result;
 use arboard::Clipboard;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind, MouseButton};
+use git2::Repository;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Mode {
@@ -48,11 +50,55 @@ pub struct App {
     unsaved_buffers_to_check: Vec<usize>,
     quit_confirmed: bool,
     last_key: Option<KeyCode>,
+    git_repo: Option<Repository>,
+    git_branch: Option<String>,
+    git_status_cache: Option<(usize, usize)>, // (staged, modified)
+    git_cache_timestamp: std::time::Instant,
 }
 
 impl App {
     pub fn new(config: Config) -> Result<Self> {
         Self::new_with_dir(config, std::env::current_dir()?)
+    }
+
+    fn update_git_cache(&mut self) {
+        // Only update cache if more than 1 second has passed
+        if self.git_cache_timestamp.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+
+        self.git_cache_timestamp = Instant::now();
+
+        if let Some(ref repo) = self.git_repo {
+            // Update branch name
+            self.git_branch = repo.head().ok().and_then(|head| {
+                head.shorthand().map(|s| s.to_string())
+            });
+
+            // Update status counts
+            if let Ok(statuses) = repo.statuses(None) {
+                let mut modified_files = 0;
+                let mut staged_files = 0;
+
+                for entry in statuses.iter() {
+                    let status = entry.status();
+                    if status.contains(git2::Status::WT_MODIFIED)
+                        || status.contains(git2::Status::WT_NEW)
+                        || status.contains(git2::Status::WT_DELETED) {
+                        modified_files += 1;
+                    }
+                    if status.contains(git2::Status::INDEX_NEW)
+                        || status.contains(git2::Status::INDEX_MODIFIED)
+                        || status.contains(git2::Status::INDEX_DELETED) {
+                        staged_files += 1;
+                    }
+                }
+
+                self.git_status_cache = Some((staged_files, modified_files));
+            } else {
+                self.git_status_cache = None;
+            }
+        }
     }
 
     pub fn new_with_dir(config: Config, working_dir: PathBuf) -> Result<Self> {
@@ -61,7 +107,7 @@ impl App {
             theme_manager.set_theme("Dark");
         }
 
-        let sidebar = Sidebar::new(working_dir).ok();
+        let sidebar = Sidebar::new(working_dir.clone()).ok();
 
         // Set the syntect theme from config
         let mut syntax_highlighter = SyntaxHighlighter::new();
@@ -69,6 +115,38 @@ impl App {
 
         // Try to initialize clipboard
         let clipboard = Clipboard::new().ok();
+
+        // Try to open git repository and cache initial branch
+        let git_repo = Repository::open(&working_dir).ok();
+        let git_branch = git_repo.as_ref().and_then(|repo| {
+            repo.head().ok().and_then(|head| {
+                head.shorthand().map(|s| s.to_string())
+            })
+        });
+
+        // Initialize git status cache
+        let git_status_cache = git_repo.as_ref().and_then(|repo| {
+            repo.statuses(None).ok().map(|statuses| {
+                let mut modified_files = 0;
+                let mut staged_files = 0;
+
+                for entry in statuses.iter() {
+                    let status = entry.status();
+                    if status.contains(git2::Status::WT_MODIFIED)
+                        || status.contains(git2::Status::WT_NEW)
+                        || status.contains(git2::Status::WT_DELETED) {
+                        modified_files += 1;
+                    }
+                    if status.contains(git2::Status::INDEX_NEW)
+                        || status.contains(git2::Status::INDEX_MODIFIED)
+                        || status.contains(git2::Status::INDEX_DELETED) {
+                        staged_files += 1;
+                    }
+                }
+
+                (staged_files, modified_files)
+            })
+        });
 
         Ok(Self {
             config,
@@ -92,6 +170,10 @@ impl App {
             unsaved_buffers_to_check: Vec::new(),
             quit_confirmed: false,
             last_key: None,
+            git_repo,
+            git_branch,
+            git_status_cache,
+            git_cache_timestamp: Instant::now(),
         })
     }
 
@@ -234,6 +316,10 @@ impl App {
                 String::from("Buffer saved")
             };
 
+            // Force git cache update after saving
+            self.git_cache_timestamp = Instant::now().checked_sub(Duration::from_secs(2)).unwrap_or(Instant::now());
+            self.update_git_cache();
+
             // Refresh sidebar after saving to update Git status
             if let Some(sidebar) = &mut self.sidebar {
                 sidebar.refresh()?;
@@ -278,7 +364,7 @@ impl App {
                 self.last_key = None;
                 // Clear the command indicator from status
                 if self.status_message == "d" || self.status_message == "y" || self.status_message == "^W" {
-                    self.status_message = String::from("-- NORMAL --");
+                    self.status_message.clear();
                 }
             }
         }
@@ -430,11 +516,11 @@ impl App {
             }
             (KeyCode::Char('i'), KeyModifiers::NONE) => {
                 self.mode = Mode::Insert;
-                self.status_message = String::from("-- INSERT --");
+                self.status_message.clear();
             }
             (KeyCode::Char('v'), KeyModifiers::NONE) if !matches!(self.last_key, Some(KeyCode::Char('w'))) => {
                 self.mode = Mode::Visual;
-                self.status_message = String::from("-- VISUAL --");
+                self.status_message.clear();
             }
             (KeyCode::Char(':'), KeyModifiers::NONE) => {
                 self.mode = Mode::Command;
@@ -793,7 +879,7 @@ impl App {
         match (key.code, key.modifiers) {
             (KeyCode::Esc, _) => {
                 self.mode = Mode::Normal;
-                self.status_message = String::from("-- NORMAL --");
+                self.status_message.clear();
                 self.buffer_manager.current_mut().clear_selection();
             }
             // CUA bindings in insert mode
@@ -1062,7 +1148,7 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.mode = Mode::Normal;
-                self.status_message = String::from("-- NORMAL --");
+                self.status_message.clear();
                 self.buffer_manager.current_mut().selection = None;
             }
             _ => {}
@@ -1075,7 +1161,7 @@ impl App {
             KeyCode::Esc => {
                 self.mode = Mode::Normal;
                 self.command_buffer.clear();
-                self.status_message = String::from("-- NORMAL --");
+                self.status_message.clear();
             }
             KeyCode::Enter => {
                 self.execute_command()?;
@@ -1359,7 +1445,7 @@ impl App {
                 self.mode = Mode::Normal;
                 self.search_query.clear();
                 self.search_matches.clear();
-                self.status_message = String::from("-- NORMAL --");
+                self.status_message.clear();
             }
             (KeyCode::Char('g'), KeyModifiers::CONTROL) => {
                 // Toggle case sensitivity
@@ -1450,7 +1536,7 @@ impl App {
                 self.search_query.clear();
                 self.replace_text.clear();
                 self.search_matches.clear();
-                self.status_message = String::from("-- NORMAL --");
+                self.status_message.clear();
             }
             (KeyCode::Char('g'), KeyModifiers::CONTROL) => {
                 // Toggle case sensitivity
@@ -1863,6 +1949,9 @@ impl App {
     }
 
     pub fn draw(&mut self, frame: &mut Frame) {
+        // Update git cache periodically (max once per second)
+        self.update_git_cache();
+
         let _theme = self.theme_manager.get_current_theme();
         let size = frame.area();
 
@@ -2426,92 +2515,184 @@ impl App {
     fn draw_status_bar(&self, frame: &mut Frame, area: Rect) {
         let theme = self.theme_manager.get_current_theme();
 
+        // Mode indicator with consistent width
         let mode_str = match self.mode {
-            Mode::Normal => " NORMAL ",
-            Mode::Insert => " INSERT ",
-            Mode::Visual => " VISUAL ",
-            Mode::Command => " COMMAND ",
-            Mode::Search => " SEARCH ",
-            Mode::Replace => " REPLACE ",
-            Mode::QuitConfirm => " QUIT? ",
+            Mode::Normal => " NOR ",
+            Mode::Insert => " INS ",
+            Mode::Visual => " VIS ",
+            Mode::Command => " CMD ",
+            Mode::Search => " SRC ",
+            Mode::Replace => " REP ",
+            Mode::QuitConfirm => " Q? ",
         };
 
         let mode_style = match self.mode {
             Mode::Normal => Style::default()
-                .fg(hex_to_color(&theme.ui.status_bar.mode_normal))
-                .bg(hex_to_color(&theme.ui.status_bar.background))
+                .fg(hex_to_color(&theme.ui.status_bar.background))
+                .bg(hex_to_color(&theme.ui.status_bar.mode_normal))
                 .add_modifier(Modifier::BOLD),
             Mode::Insert => Style::default()
-                .fg(hex_to_color(&theme.ui.status_bar.mode_insert))
-                .bg(hex_to_color(&theme.ui.status_bar.background))
+                .fg(hex_to_color(&theme.ui.status_bar.background))
+                .bg(hex_to_color(&theme.ui.status_bar.mode_insert))
                 .add_modifier(Modifier::BOLD),
             Mode::Visual => Style::default()
-                .fg(hex_to_color(&theme.ui.status_bar.mode_visual))
-                .bg(hex_to_color(&theme.ui.status_bar.background))
+                .fg(hex_to_color(&theme.ui.status_bar.background))
+                .bg(hex_to_color(&theme.ui.status_bar.mode_visual))
                 .add_modifier(Modifier::BOLD),
             Mode::Command | Mode::Search | Mode::Replace => Style::default()
-                .fg(hex_to_color(&theme.ui.status_bar.foreground))
-                .bg(hex_to_color(&theme.ui.status_bar.background)),
+                .fg(hex_to_color(&theme.ui.status_bar.background))
+                .bg(hex_to_color(&theme.ui.status_bar.foreground))
+                .add_modifier(Modifier::BOLD),
             Mode::QuitConfirm => Style::default()
-                .fg(ratatui::style::Color::Rgb(255, 100, 100))
-                .bg(hex_to_color(&theme.ui.status_bar.background))
+                .fg(ratatui::style::Color::White)
+                .bg(ratatui::style::Color::Rgb(200, 50, 50))
                 .add_modifier(Modifier::BOLD),
         };
 
-        // Buffer info: [1/3] filename [+]
-        let buffer_info = format!(
-            "[{}/{}]",
-            self.buffer_manager.current_buffer_index(),
-            self.buffer_manager.buffer_count()
-        );
-
+        // Get file name or [No Name]
         let file_info = if let Some(path) = &self.buffer_manager.current().file_path {
-            format!(" {} ", path.display())
+            if let Some(file_name) = path.file_name() {
+                file_name.to_string_lossy().to_string()
+            } else {
+                path.display().to_string()
+            }
         } else {
-            String::from(" [No Name] ")
+            String::from("[No Name]")
         };
 
-        let modified_indicator = if self.buffer_manager.current().modified { "[+]" } else { "" };
+        // Modified indicator
+        let modified = if self.buffer_manager.current().modified { " ●" } else { "" };
 
+        // Buffer count if more than 1
+        let buffer_info = if self.buffer_manager.buffer_count() > 1 {
+            format!(" [{}/{}]",
+                self.buffer_manager.current_buffer_index(),
+                self.buffer_manager.buffer_count()
+            )
+        } else {
+            String::new()
+        };
+
+        // File type/syntax
+        let file_type = if let Some(syntax_name) = &self.buffer_manager.current().syntax_name {
+            format!(" {} ", syntax_name.to_lowercase())
+        } else {
+            String::from(" text ")
+        };
+
+        // Cursor position - line:col
         let position = format!(
-            " {}:{}",
+            " {}:{} ",
             self.buffer_manager.current().cursor_position.0 + 1,
             self.buffer_manager.current().cursor_position.1 + 1
         );
 
+        // Git information (using cached values)
+        let git_info = if self.git_repo.is_some() {
+            if let Some(ref branch_name) = self.git_branch {
+                let status_indicator = if let Some((staged_count, modified_count)) = self.git_status_cache {
+                    if modified_count > 0 || staged_count > 0 {
+                        format!(" +{}~{}", staged_count, modified_count)
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                };
+
+                format!(" 󰊢 {}{} ", branch_name, status_indicator)
+            } else {
+                String::from(" 󰊢 no branch ")
+            }
+        } else {
+            String::new()
+        };
+
+        // Line ending type (for future use, hardcoded for now)
+        let line_ending = " LF ";
+
+        // Calculate spacing
+        let left_content = format!("{} {}{}{}", mode_str, file_info, modified, buffer_info);
+        let right_content = format!("{}{}{}{}", git_info, file_type, line_ending, position);
+        let left_len = left_content.chars().count();
+        let right_len = right_content.chars().count();
+        let total_len = left_len + right_len;
+
+        let spacing = if total_len < area.width as usize {
+            area.width as usize - total_len
+        } else {
+            1
+        };
+
         let mut spans = vec![
+            // Mode indicator
             Span::styled(mode_str, mode_style),
+            // Separator
             Span::styled(
-                format!(" {} ", buffer_info),
+                " ",
+                Style::default().bg(hex_to_color(&theme.ui.status_bar.background)),
+            ),
+            // File name
+            Span::styled(
+                format!("{}{}", file_info, modified),
+                Style::default()
+                    .fg(if self.buffer_manager.current().modified {
+                        hex_to_color(&theme.ui.status_bar.mode_insert) // Use insert color for modified
+                    } else {
+                        hex_to_color(&theme.ui.status_bar.foreground)
+                    })
+                    .bg(hex_to_color(&theme.ui.status_bar.background))
+                    .add_modifier(if self.buffer_manager.current().modified {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
+            ),
+            // Buffer info
+            Span::styled(
+                buffer_info,
                 Style::default()
                     .fg(hex_to_color(&theme.ui.status_bar.foreground))
-                    .bg(hex_to_color(&theme.ui.status_bar.background)),
+                    .bg(hex_to_color(&theme.ui.status_bar.background))
+                    .add_modifier(Modifier::DIM),
             ),
+            // Spacing
             Span::styled(
-                format!("{}{}", file_info, modified_indicator),
+                " ".repeat(spacing),
+                Style::default().bg(hex_to_color(&theme.ui.status_bar.background)),
+            ),
+            // Git info
+            Span::styled(
+                git_info,
+                Style::default()
+                    .fg(hex_to_color(&theme.ui.status_bar.mode_visual)) // Use a distinct color for git info
+                    .bg(hex_to_color(&theme.ui.status_bar.background))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            // File type
+            Span::styled(
+                file_type,
+                Style::default()
+                    .fg(hex_to_color(&theme.ui.status_bar.foreground))
+                    .bg(hex_to_color(&theme.ui.status_bar.background))
+                    .add_modifier(Modifier::DIM),
+            ),
+            // Line ending
+            Span::styled(
+                line_ending,
+                Style::default()
+                    .fg(hex_to_color(&theme.ui.status_bar.foreground))
+                    .bg(hex_to_color(&theme.ui.status_bar.background))
+                    .add_modifier(Modifier::DIM),
+            ),
+            // Position
+            Span::styled(
+                position,
                 Style::default()
                     .fg(hex_to_color(&theme.ui.status_bar.foreground))
                     .bg(hex_to_color(&theme.ui.status_bar.background)),
             ),
         ];
-
-        let remaining_width = area.width as usize
-            - mode_str.len()
-            - file_info.len()
-            - modified_indicator.len()
-            - position.len();
-
-        spans.push(Span::styled(
-            " ".repeat(remaining_width),
-            Style::default().bg(hex_to_color(&theme.ui.status_bar.background)),
-        ));
-
-        spans.push(Span::styled(
-            position,
-            Style::default()
-                .fg(hex_to_color(&theme.ui.status_bar.foreground))
-                .bg(hex_to_color(&theme.ui.status_bar.background)),
-        ));
 
         let status_line = Line::from(spans);
         let status_widget = Paragraph::new(vec![status_line]);
