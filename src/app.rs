@@ -389,6 +389,34 @@ impl App {
             (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
                 self.show_sidebar = !self.show_sidebar;
             }
+            // Visual feedback toggles
+            (KeyCode::Char('w'), KeyModifiers::ALT) => {
+                // Toggle whitespace visualization
+                self.config.editor.show_whitespace = !self.config.editor.show_whitespace;
+                self.status_message = if self.config.editor.show_whitespace {
+                    String::from("Whitespace visualization enabled")
+                } else {
+                    String::from("Whitespace visualization disabled")
+                };
+            }
+            (KeyCode::Char('r'), KeyModifiers::ALT) => {
+                // Toggle column rulers
+                self.config.editor.show_column_ruler = !self.config.editor.show_column_ruler;
+                self.status_message = if self.config.editor.show_column_ruler {
+                    String::from("Column rulers enabled (80, 100, 120)")
+                } else {
+                    String::from("Column rulers disabled")
+                };
+            }
+            (KeyCode::Char('i'), KeyModifiers::ALT) => {
+                // Toggle indent guides
+                self.config.editor.show_indent_guides = !self.config.editor.show_indent_guides;
+                self.status_message = if self.config.editor.show_indent_guides {
+                    String::from("Indent guides enabled")
+                } else {
+                    String::from("Indent guides disabled")
+                };
+            }
             // Line operations
             (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
                 // Duplicate line
@@ -2238,11 +2266,20 @@ impl App {
             // Build spans character by character to handle selection
             let row = pane.viewport_offset + i;
 
+            // Calculate indent level for indent guides
+            let indent_level = if self.config.editor.show_indent_guides {
+                line.chars().take_while(|c| *c == ' ' || *c == '\t').count() / self.config.editor.tab_width
+            } else {
+                0
+            };
+
             // Apply syntax highlighting if available and no selection
             if buffer.selection.is_none() && syntax.is_some() {
                 if let Some(syntax) = syntax {
                     if let Ok(highlighted) = self.syntax_highlighter.highlight_line(line, syntax) {
                         let mut current_col = 0;
+                        let line_chars: Vec<char> = line.chars().collect();
+
                         for (style, text) in highlighted {
                             for ch in text.chars() {
                                 let is_bracket = matches!(ch, '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>');
@@ -2255,6 +2292,32 @@ impl App {
                                     );
                                 let is_cursor_bracket = is_active && cursor_row == row && cursor_pos.1 == current_col;
 
+                                // Check for column ruler
+                                let is_column_ruler = self.config.editor.show_column_ruler &&
+                                    self.config.editor.column_ruler_positions.contains(&current_col);
+
+                                // Check for whitespace visualization
+                                let display_char = if self.config.editor.show_whitespace {
+                                    match ch {
+                                        ' ' => '·',
+                                        '\t' => '→',
+                                        _ => ch,
+                                    }
+                                } else {
+                                    ch
+                                };
+
+                                // Check for trailing whitespace
+                                let is_trailing_whitespace = self.config.editor.show_whitespace &&
+                                    (ch == ' ' || ch == '\t') &&
+                                    current_col >= line.trim_end().len();
+
+                                // Check for indent guide
+                                let is_indent_guide = self.config.editor.show_indent_guides &&
+                                    current_col % self.config.editor.tab_width == 0 &&
+                                    current_col < indent_level * self.config.editor.tab_width &&
+                                    ch == ' ';
+
                                 if is_bracket && self.config.editor.rainbow_brackets {
                                     // Get bracket depth for rainbow coloring
                                     let depth = buffer.get_bracket_depth_at((row, current_col));
@@ -2265,6 +2328,22 @@ impl App {
                                         ratatui_style = ratatui_style.bg(ratatui::style::Color::Rgb(80, 80, 80))
                                             .add_modifier(ratatui::style::Modifier::BOLD);
                                     }
+                                } else if is_trailing_whitespace {
+                                    // Highlight trailing whitespace
+                                    ratatui_style = ratatui_style.fg(ratatui::style::Color::Red)
+                                        .bg(ratatui::style::Color::Rgb(60, 20, 20));
+                                } else if is_indent_guide {
+                                    // Draw indent guide
+                                    ratatui_style = ratatui_style.fg(ratatui::style::Color::Rgb(60, 60, 60));
+                                    spans.push(Span::styled("│", ratatui_style));
+                                    current_col += 1;
+                                    continue;
+                                } else if is_column_ruler {
+                                    // Highlight column ruler position
+                                    ratatui_style = ratatui_style.bg(ratatui::style::Color::Rgb(40, 40, 40));
+                                } else if self.config.editor.show_whitespace && (ch == ' ' || ch == '\t') {
+                                    // Dim whitespace characters
+                                    ratatui_style = ratatui_style.fg(ratatui::style::Color::Rgb(80, 80, 80));
                                 } else {
                                     // Apply syntax highlighting color
                                     let fg = style.foreground;
@@ -2288,13 +2367,30 @@ impl App {
 
                                 // Apply current line highlighting
                                 if is_current_line && self.config.editor.highlight_current_line {
-                                    if !is_matching_bracket && !is_cursor_bracket {
+                                    if !is_matching_bracket && !is_cursor_bracket && !is_column_ruler {
                                         ratatui_style = ratatui_style.bg(hex_to_color(&theme.ui.current_line));
                                     }
                                 }
 
-                                spans.push(Span::styled(ch.to_string(), ratatui_style));
+                                spans.push(Span::styled(display_char.to_string(), ratatui_style));
                                 current_col += 1;
+                            }
+                        }
+
+                        // Add column rulers for positions beyond line length
+                        if self.config.editor.show_column_ruler {
+                            for &ruler_pos in &self.config.editor.column_ruler_positions {
+                                if ruler_pos >= current_col {
+                                    let spaces_to_ruler = ruler_pos - current_col;
+                                    for _ in 0..spaces_to_ruler {
+                                        spans.push(Span::styled(" ", Style::default()));
+                                        current_col += 1;
+                                    }
+                                    if ruler_pos == current_col {
+                                        spans.push(Span::styled("│", Style::default()
+                                            .fg(ratatui::style::Color::Rgb(60, 60, 60))));
+                                    }
+                                }
                             }
                         }
                     } else {
@@ -2309,22 +2405,80 @@ impl App {
                     let is_selected = buffer.is_position_selected(row, col);
                     let mut style = get_ui_style(theme, "foreground");
 
-                    if is_selected {
-                        style = style.bg(hex_to_color(&theme.ui.selection));
-                    } else if is_current_line && self.config.editor.highlight_current_line {
-                        style = style.bg(hex_to_color(&theme.ui.current_line));
-                    }
+                    // Check for whitespace visualization
+                    let display_char = if self.config.editor.show_whitespace {
+                        match ch {
+                            ' ' => '·',
+                            '\t' => '→',
+                            _ => ch,
+                        }
+                    } else {
+                        ch
+                    };
 
-                    spans.push(Span::styled(ch.to_string(), style));
+                    // Check for indent guide
+                    let is_indent_guide = self.config.editor.show_indent_guides &&
+                        col % self.config.editor.tab_width == 0 &&
+                        col < indent_level * self.config.editor.tab_width &&
+                        ch == ' ';
+
+                    if is_indent_guide {
+                        style = style.fg(ratatui::style::Color::Rgb(60, 60, 60));
+                        spans.push(Span::styled("│", style));
+                    } else {
+                        if is_selected {
+                            style = style.bg(hex_to_color(&theme.ui.selection));
+                        } else if is_current_line && self.config.editor.highlight_current_line {
+                            style = style.bg(hex_to_color(&theme.ui.current_line));
+                        }
+
+                        if self.config.editor.show_whitespace && (ch == ' ' || ch == '\t') {
+                            style = style.fg(ratatui::style::Color::Rgb(80, 80, 80));
+                        }
+
+                        spans.push(Span::styled(display_char.to_string(), style));
+                    }
                     col += 1;
                 }
             } else {
                 // Simple text rendering without syntax highlighting
-                let mut style = get_ui_style(theme, "foreground");
-                if is_current_line && self.config.editor.highlight_current_line {
-                    style = style.bg(hex_to_color(&theme.ui.current_line));
+                let mut col = 0;
+                for ch in line.chars() {
+                    let mut style = get_ui_style(theme, "foreground");
+
+                    // Check for whitespace visualization
+                    let display_char = if self.config.editor.show_whitespace {
+                        match ch {
+                            ' ' => '·',
+                            '\t' => '→',
+                            _ => ch,
+                        }
+                    } else {
+                        ch
+                    };
+
+                    // Check for indent guide
+                    let is_indent_guide = self.config.editor.show_indent_guides &&
+                        col % self.config.editor.tab_width == 0 &&
+                        col < indent_level * self.config.editor.tab_width &&
+                        ch == ' ';
+
+                    if is_indent_guide {
+                        style = style.fg(ratatui::style::Color::Rgb(60, 60, 60));
+                        spans.push(Span::styled("│", style));
+                    } else {
+                        if is_current_line && self.config.editor.highlight_current_line {
+                            style = style.bg(hex_to_color(&theme.ui.current_line));
+                        }
+
+                        if self.config.editor.show_whitespace && (ch == ' ' || ch == '\t') {
+                            style = style.fg(ratatui::style::Color::Rgb(80, 80, 80));
+                        }
+
+                        spans.push(Span::styled(display_char.to_string(), style));
+                    }
+                    col += 1;
                 }
-                spans.push(ratatui::text::Span::styled(line.to_string(), style));
             }
 
             paragraph_lines.push(ratatui::text::Line::from(spans));
@@ -2460,12 +2614,36 @@ impl App {
             let row = self.viewport_offset + i;
             let mut col = 0;
 
+            // Calculate indent level for indent guides
+            let indent_level = if self.config.editor.show_indent_guides {
+                line.chars().take_while(|c| *c == ' ' || *c == '\t').count() / self.config.editor.tab_width
+            } else {
+                0
+            };
+
             // Simple rendering with selection support (no syntax highlighting for now when selection is active)
             if self.buffer_manager.current().selection.is_some() {
                 for ch in line.chars() {
                     let is_selected = self.buffer_manager.current().is_position_selected(row, col);
                     let is_bracket = matches!(ch, '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>');
                     let mut style = get_ui_style(theme, "foreground");
+
+                    // Check for whitespace visualization
+                    let display_char = if self.config.editor.show_whitespace {
+                        match ch {
+                            ' ' => '·',
+                            '\t' => '→',
+                            _ => ch,
+                        }
+                    } else {
+                        ch
+                    };
+
+                    // Check for indent guide
+                    let is_indent_guide = self.config.editor.show_indent_guides &&
+                        col % self.config.editor.tab_width == 0 &&
+                        col < indent_level * self.config.editor.tab_width &&
+                        ch == ' ';
 
                     // Check if this position matches the bracket under cursor or its match
                     let is_matching_bracket = matching_bracket
@@ -2474,27 +2652,36 @@ impl App {
                         );
                     let is_cursor_bracket = cursor_row == row && cursor_pos.1 == col;
 
-                    if is_bracket && self.config.editor.rainbow_brackets && !is_selected {
-                        // Get bracket depth for rainbow coloring
-                        let depth = self.buffer_manager.current().get_bracket_depth_at((row, col));
-                        style = style.fg(self.get_rainbow_color(depth));
+                    if is_indent_guide {
+                        style = style.fg(ratatui::style::Color::Rgb(60, 60, 60));
+                        spans.push(Span::styled("│", style));
+                    } else {
+                        if is_bracket && self.config.editor.rainbow_brackets && !is_selected {
+                            // Get bracket depth for rainbow coloring
+                            let depth = self.buffer_manager.current().get_bracket_depth_at((row, col));
+                            style = style.fg(self.get_rainbow_color(depth));
 
-                        // Highlight matching brackets
-                        if is_matching_bracket || is_cursor_bracket {
-                            style = style.bg(ratatui::style::Color::Rgb(80, 80, 80))
-                                .add_modifier(ratatui::style::Modifier::BOLD);
+                            // Highlight matching brackets
+                            if is_matching_bracket || is_cursor_bracket {
+                                style = style.bg(ratatui::style::Color::Rgb(80, 80, 80))
+                                    .add_modifier(ratatui::style::Modifier::BOLD);
+                            }
                         }
-                    }
 
-                    if is_selected {
-                        style = style.bg(hex_to_color(&theme.ui.selection));
-                    } else if is_current_line && self.config.editor.highlight_current_line {
-                        if !is_matching_bracket && !is_cursor_bracket {
-                            style = style.bg(hex_to_color(&theme.ui.current_line));
+                        if is_selected {
+                            style = style.bg(hex_to_color(&theme.ui.selection));
+                        } else if is_current_line && self.config.editor.highlight_current_line {
+                            if !is_matching_bracket && !is_cursor_bracket {
+                                style = style.bg(hex_to_color(&theme.ui.current_line));
+                            }
                         }
-                    }
 
-                    spans.push(Span::styled(ch.to_string(), style));
+                        if self.config.editor.show_whitespace && (ch == ' ' || ch == '\t') {
+                            style = style.fg(ratatui::style::Color::Rgb(80, 80, 80));
+                        }
+
+                        spans.push(Span::styled(display_char.to_string(), style));
+                    }
                     col += 1;
                 }
             } else {
@@ -2514,6 +2701,32 @@ impl App {
                                     );
                                 let is_cursor_bracket = cursor_row == row && cursor_pos.1 == current_col;
 
+                                // Check for column ruler
+                                let is_column_ruler = self.config.editor.show_column_ruler &&
+                                    self.config.editor.column_ruler_positions.contains(&current_col);
+
+                                // Check for whitespace visualization
+                                let display_char = if self.config.editor.show_whitespace {
+                                    match ch {
+                                        ' ' => '·',
+                                        '\t' => '→',
+                                        _ => ch,
+                                    }
+                                } else {
+                                    ch
+                                };
+
+                                // Check for trailing whitespace
+                                let is_trailing_whitespace = self.config.editor.show_whitespace &&
+                                    (ch == ' ' || ch == '\t') &&
+                                    current_col >= line.trim_end().len();
+
+                                // Check for indent guide
+                                let is_indent_guide = self.config.editor.show_indent_guides &&
+                                    current_col % self.config.editor.tab_width == 0 &&
+                                    current_col < indent_level * self.config.editor.tab_width &&
+                                    ch == ' ';
+
                                 if is_bracket && self.config.editor.rainbow_brackets {
                                     // Get bracket depth for rainbow coloring
                                     let depth = self.buffer_manager.current().get_bracket_depth_at((row, current_col));
@@ -2524,6 +2737,22 @@ impl App {
                                         ratatui_style = ratatui_style.bg(ratatui::style::Color::Rgb(80, 80, 80))
                                             .add_modifier(ratatui::style::Modifier::BOLD);
                                     }
+                                } else if is_trailing_whitespace {
+                                    // Highlight trailing whitespace
+                                    ratatui_style = ratatui_style.fg(ratatui::style::Color::Red)
+                                        .bg(ratatui::style::Color::Rgb(60, 20, 20));
+                                } else if is_indent_guide {
+                                    // Draw indent guide
+                                    ratatui_style = ratatui_style.fg(ratatui::style::Color::Rgb(60, 60, 60));
+                                    spans.push(Span::styled("│", ratatui_style));
+                                    current_col += 1;
+                                    continue;
+                                } else if is_column_ruler {
+                                    // Highlight column ruler position
+                                    ratatui_style = ratatui_style.bg(ratatui::style::Color::Rgb(40, 40, 40));
+                                } else if self.config.editor.show_whitespace && (ch == ' ' || ch == '\t') {
+                                    // Dim whitespace characters
+                                    ratatui_style = ratatui_style.fg(ratatui::style::Color::Rgb(80, 80, 80));
                                 } else {
                                     // Normal syntax highlighting
                                     ratatui_style = ratatui_style.fg(ratatui::style::Color::Rgb(
@@ -2534,13 +2763,30 @@ impl App {
                                 }
 
                                 if is_current_line && self.config.editor.highlight_current_line {
-                                    if !is_matching_bracket && !is_cursor_bracket {
+                                    if !is_matching_bracket && !is_cursor_bracket && !is_column_ruler {
                                         ratatui_style = ratatui_style.bg(hex_to_color(&theme.ui.current_line));
                                     }
                                 }
 
-                                spans.push(Span::styled(ch.to_string(), ratatui_style));
+                                spans.push(Span::styled(display_char.to_string(), ratatui_style));
                                 current_col += 1;
+                            }
+                        }
+
+                        // Add column rulers for positions beyond line length
+                        if self.config.editor.show_column_ruler {
+                            for &ruler_pos in &self.config.editor.column_ruler_positions {
+                                if ruler_pos >= current_col {
+                                    let spaces_to_ruler = ruler_pos - current_col;
+                                    for _ in 0..spaces_to_ruler {
+                                        spans.push(Span::styled(" ", Style::default()));
+                                        current_col += 1;
+                                    }
+                                    if ruler_pos == current_col {
+                                        spans.push(Span::styled("│", Style::default()
+                                            .fg(ratatui::style::Color::Rgb(60, 60, 60))));
+                                    }
+                                }
                             }
                         }
                     } else {
@@ -2558,10 +2804,27 @@ impl App {
                         }
                     }
                 } else {
-                    // No syntax highlighting available - still handle brackets
+                    // No syntax highlighting available - still handle brackets and visual feedback
                     for ch in line.chars() {
                         let is_bracket = matches!(ch, '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>');
                         let mut style = get_ui_style(theme, "foreground");
+
+                        // Check for whitespace visualization
+                        let display_char = if self.config.editor.show_whitespace {
+                            match ch {
+                                ' ' => '·',
+                                '\t' => '→',
+                                _ => ch,
+                            }
+                        } else {
+                            ch
+                        };
+
+                        // Check for indent guide
+                        let is_indent_guide = self.config.editor.show_indent_guides &&
+                            col % self.config.editor.tab_width == 0 &&
+                            col < indent_level * self.config.editor.tab_width &&
+                            ch == ' ';
 
                         // Check if this position matches the bracket under cursor or its match
                         let is_matching_bracket = matching_bracket
@@ -2570,25 +2833,34 @@ impl App {
                             );
                         let is_cursor_bracket = cursor_row == row && cursor_pos.1 == col;
 
-                        if is_bracket && self.config.editor.rainbow_brackets {
-                            // Get bracket depth for rainbow coloring
-                            let depth = self.buffer_manager.current().get_bracket_depth_at((row, col));
-                            style = style.fg(self.get_rainbow_color(depth));
+                        if is_indent_guide {
+                            style = style.fg(ratatui::style::Color::Rgb(60, 60, 60));
+                            spans.push(Span::styled("│", style));
+                        } else {
+                            if is_bracket && self.config.editor.rainbow_brackets {
+                                // Get bracket depth for rainbow coloring
+                                let depth = self.buffer_manager.current().get_bracket_depth_at((row, col));
+                                style = style.fg(self.get_rainbow_color(depth));
 
-                            // Highlight matching brackets
-                            if is_matching_bracket || is_cursor_bracket {
-                                style = style.bg(ratatui::style::Color::Rgb(80, 80, 80))
-                                    .add_modifier(ratatui::style::Modifier::BOLD);
+                                // Highlight matching brackets
+                                if is_matching_bracket || is_cursor_bracket {
+                                    style = style.bg(ratatui::style::Color::Rgb(80, 80, 80))
+                                        .add_modifier(ratatui::style::Modifier::BOLD);
+                                }
                             }
-                        }
 
-                        if is_current_line && self.config.editor.highlight_current_line {
-                            if !is_matching_bracket && !is_cursor_bracket {
-                                style = style.bg(hex_to_color(&theme.ui.current_line));
+                            if is_current_line && self.config.editor.highlight_current_line {
+                                if !is_matching_bracket && !is_cursor_bracket {
+                                    style = style.bg(hex_to_color(&theme.ui.current_line));
+                                }
                             }
-                        }
 
-                        spans.push(Span::styled(ch.to_string(), style));
+                            if self.config.editor.show_whitespace && (ch == ' ' || ch == '\t') {
+                                style = style.fg(ratatui::style::Color::Rgb(80, 80, 80));
+                            }
+
+                            spans.push(Span::styled(display_char.to_string(), style));
+                        }
                         col += 1;
                     }
                 }

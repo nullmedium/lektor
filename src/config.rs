@@ -24,6 +24,11 @@ pub struct EditorConfig {
     pub auto_save_interval: u64,
     pub rainbow_brackets: bool,
     pub highlight_matching_bracket: bool,
+    // Visual feedback settings
+    pub show_column_ruler: bool,
+    pub column_ruler_positions: Vec<usize>,
+    pub show_whitespace: bool,
+    pub show_indent_guides: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +78,10 @@ impl Default for Config {
                 auto_save_interval: 30,
                 rainbow_brackets: true,
                 highlight_matching_bracket: true,
+                show_column_ruler: true,
+                column_ruler_positions: vec![80, 100, 120],
+                show_whitespace: false,
+                show_indent_guides: true,
             },
             theme: ThemeConfig {
                 name: String::from("default"),
