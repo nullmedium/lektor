@@ -97,8 +97,9 @@ impl super::App {
     fn update_active_pane_cursor(&mut self) {
         if let Some(split_manager) = &mut self.split_manager {
             if let Some(pane) = split_manager.get_active_pane() {
-                let buffer = &self.buffer_manager.buffers[pane.buffer_index];
-                pane.viewport_offset = self.calculate_viewport_offset(buffer);
+                // For now, just set viewport_offset to 0
+                // The calculate_viewport_offset logic needs to be refactored
+                pane.viewport_offset = 0;
             }
         }
     }
@@ -129,7 +130,7 @@ impl super::App {
         }
     }
 
-    fn calculate_viewport_offset(&self, buffer: &TextBuffer) -> usize {
+    fn calculate_viewport_offset(&self, _buffer: &TextBuffer) -> usize {
         // This logic should match the viewport calculation in the main app
         // For now, just return 0 as a placeholder
         0

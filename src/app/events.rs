@@ -102,7 +102,7 @@ impl super::App {
                     let relative_y = mouse.row;
 
                     // Calculate buffer position from mouse coordinates
-                    let viewport_offset = if let Some(split_manager) = &self.split_manager {
+                    let viewport_offset = if let Some(split_manager) = &mut self.split_manager {
                         if let Some(pane) = split_manager.get_active_pane() {
                             pane.viewport_offset
                         } else {
@@ -149,7 +149,7 @@ impl super::App {
                     let relative_x = mouse.column - editor_start_x;
                     let relative_y = mouse.row;
 
-                    let viewport_offset = if let Some(split_manager) = &self.split_manager {
+                    let viewport_offset = if let Some(split_manager) = &mut self.split_manager {
                         if let Some(pane) = split_manager.get_active_pane() {
                             pane.viewport_offset
                         } else {

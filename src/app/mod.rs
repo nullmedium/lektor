@@ -1,6 +1,7 @@
 pub mod diff;
 pub mod editing;
 pub mod events;
+pub mod mode_handlers;
 pub mod render;
 pub mod split_ops;
 
@@ -155,6 +156,10 @@ impl App {
         Ok(())
     }
 
+    pub fn save_file(&mut self) -> Result<()> {
+        self.save_current_buffer()
+    }
+
     pub fn toggle_sidebar(&mut self) {
         self.show_sidebar = !self.show_sidebar;
         if self.show_sidebar {
@@ -228,10 +233,10 @@ impl App {
             }
             "theme" => {
                 if parts.len() > 1 {
-                    if let Err(e) = self.theme_manager.load_theme(parts[1]) {
-                        self.status_message = format!("Failed to load theme: {}", e);
-                    } else {
+                    if self.theme_manager.set_theme(parts[1]) {
                         self.status_message = format!("Theme changed to: {}", parts[1]);
+                    } else {
+                        self.status_message = format!("Failed to load theme: {}", parts[1]);
                     }
                 } else {
                     self.status_message = String::from("Usage: :theme <theme_name>");
