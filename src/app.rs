@@ -714,8 +714,16 @@ impl App {
                             if let Some(path) = sidebar.get_selected_path() {
                                 let path = path.clone();
                                 if path.is_file() {
-                                    self.open_file(&path)?;
-                                    self.show_sidebar = false;
+                                    // Handle file that may no longer exist
+                                    match self.open_file(&path) {
+                                        Ok(_) => {
+                                            self.show_sidebar = false;
+                                        }
+                                        Err(e) => {
+                                            self.status_message = format!("Error opening file: {}", e);
+                                            // Don't hide sidebar on error so user can select another file
+                                        }
+                                    }
                                 } else {
                                     if let Some(sidebar) = &mut self.sidebar {
                                         sidebar.toggle_expanded()?;
@@ -1152,7 +1160,9 @@ impl App {
             }
             "e" | "edit" if parts.len() > 1 => {
                 let path = PathBuf::from(parts[1]);
-                self.open_file(&path)?;
+                if let Err(e) = self.open_file(&path) {
+                    self.status_message = format!("Error opening file: {}", e);
+                }
             }
             "bn" | "bnext" => {
                 if self.buffer_manager.buffer_count() > 1 {
@@ -1696,8 +1706,15 @@ impl App {
                             if let Some(selected_item) = sidebar.get_selected_item() {
                                 match selected_item {
                                     crate::sidebar::SidebarItem::File(path) => {
-                                        self.buffer_manager.open_file(&path, &self.syntax_highlighter)?;
-                                        self.status_message = format!("Opened: {}", path.display());
+                                        // Handle file that may no longer exist
+                                        match self.buffer_manager.open_file(&path, &self.syntax_highlighter) {
+                                            Ok(_) => {
+                                                self.status_message = format!("Opened: {}", path.display());
+                                            }
+                                            Err(e) => {
+                                                self.status_message = format!("Error opening file: {}", e);
+                                            }
+                                        }
                                     }
                                     crate::sidebar::SidebarItem::Directory(path, _expanded) => {
                                         sidebar.toggle_directory(&path)?;
