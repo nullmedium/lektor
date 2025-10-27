@@ -277,6 +277,17 @@ impl Sidebar {
         Ok(())
     }
 
+    pub fn navigate_into_directory(&mut self) -> Result<()> {
+        if let Some(entry) = self.entries.get(self.selected_index) {
+            // Only navigate into directories, but not the ".." entry
+            if entry.is_dir && entry.name != ".." {
+                self.root_path = entry.path.clone();
+                self.refresh()?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn get_visible_entries(&self, height: usize) -> &[FileEntry] {
         let end = (self.scroll_offset + height).min(self.entries.len());
         &self.entries[self.scroll_offset..end]

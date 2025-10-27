@@ -1023,6 +1023,21 @@ impl App {
                     }
                 }
             }
+            (KeyCode::Char('e'), KeyModifiers::NONE) => {
+                // 'e' key: Enter directory (make it the new root) when sidebar is shown
+                if self.show_sidebar {
+                    if let Some(sidebar) = &mut self.sidebar {
+                        if sidebar.mode == SidebarMode::Files {
+                            sidebar.navigate_into_directory()?;
+                            let root_path_display = sidebar.root_path.display().to_string();
+                            self.status_message = format!("Entered directory: {}", root_path_display);
+                        }
+                    }
+                    self.update_git_cache();
+                } else {
+                    // When sidebar not shown, 'e' does nothing (could be used for other features)
+                }
+            }
             (KeyCode::Char('l'), KeyModifiers::NONE) | (KeyCode::Right, KeyModifiers::NONE) => {
                 if self.show_sidebar && self.sidebar.is_some() {
                     if let Some(sidebar) = &mut self.sidebar {
@@ -1056,8 +1071,20 @@ impl App {
                 self.buffer_manager.current_mut().clear_selection();
             }
             (KeyCode::Right, KeyModifiers::CONTROL) => {
-                self.buffer_manager.current_mut().move_cursor_word_right();
-                self.buffer_manager.current_mut().clear_selection();
+                // Ctrl+Right: Navigate into directory (make it the new root) when sidebar is shown
+                if self.show_sidebar {
+                    if let Some(sidebar) = &mut self.sidebar {
+                        if sidebar.mode == SidebarMode::Files {
+                            sidebar.navigate_into_directory()?;
+                            let root_path_display = sidebar.root_path.display().to_string();
+                            self.status_message = format!("Entered directory: {}", root_path_display);
+                        }
+                    }
+                    self.update_git_cache();
+                } else {
+                    self.buffer_manager.current_mut().move_cursor_word_right();
+                    self.buffer_manager.current_mut().clear_selection();
+                }
             }
             (KeyCode::Enter, _) => {
                 if self.show_sidebar {
@@ -2930,8 +2957,16 @@ impl App {
                 .collect();
 
             let title = match sidebar.mode {
-                SidebarMode::Files => "Files",
-                SidebarMode::Buffers => "Buffers",
+                SidebarMode::Files => {
+                    // Show the current root path in the sidebar title
+                    let path_display = if let Some(file_name) = sidebar.root_path.file_name() {
+                        file_name.to_string_lossy().to_string()
+                    } else {
+                        sidebar.root_path.display().to_string()
+                    };
+                    format!("Files: {}", path_display)
+                }
+                SidebarMode::Buffers => "Buffers".to_string(),
             };
 
             let sidebar_widget = List::new(items)
