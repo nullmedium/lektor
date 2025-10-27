@@ -1615,6 +1615,12 @@ impl App {
                     // Save with a specific filename (save as)
                     let path = PathBuf::from(parts[1]);
                     self.buffer_manager.current_mut().save_as(&path)?;
+
+                    // Detect and apply syntax highlighting based on file extension
+                    if let Some(syntax) = self.syntax_highlighter.detect_syntax(&path) {
+                        self.buffer_manager.current_mut().syntax_name = Some(syntax.name.clone());
+                    }
+
                     self.status_message = format!("Saved: {}", path.display());
                 } else if self.buffer_manager.current().file_path.is_some() {
                     // Save existing file
@@ -1637,6 +1643,12 @@ impl App {
                     // Save as with filename then quit
                     let path = PathBuf::from(parts[1]);
                     self.buffer_manager.current_mut().save_as(&path)?;
+
+                    // Detect and apply syntax highlighting based on file extension
+                    if let Some(syntax) = self.syntax_highlighter.detect_syntax(&path) {
+                        self.buffer_manager.current_mut().syntax_name = Some(syntax.name.clone());
+                    }
+
                     // Refresh sidebar after saving
                     if let Some(sidebar) = &mut self.sidebar {
                         sidebar.refresh()?;
