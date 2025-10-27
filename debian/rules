@@ -1,0 +1,33 @@
+#!/usr/bin/make -f
+# debian/rules for lektor
+
+# Uncomment this to turn on verbose mode
+#export DH_VERBOSE=1
+
+# Use cargo for building
+export CARGO_HOME = $(CURDIR)/debian/cargo
+
+%:
+	dh $@
+
+override_dh_auto_clean:
+	cargo clean || true
+	rm -rf debian/cargo
+
+override_dh_auto_build:
+	cargo build --release
+
+override_dh_auto_test:
+	# Skip tests for now
+	# cargo test --release
+
+override_dh_auto_install:
+	install -D -m 0755 target/release/lektor debian/lektor/usr/bin/lektor
+	install -D -m 0644 config.example.toml debian/lektor/usr/share/lektor/config.example.toml
+	install -D -m 0644 README.md debian/lektor/usr/share/doc/lektor/README.md
+	install -D -m 0644 LICENSE debian/lektor/usr/share/doc/lektor/LICENSE
+	install -D -m 0644 FEATURES_AND_IMPROVEMENTS.md debian/lektor/usr/share/doc/lektor/FEATURES_AND_IMPROVEMENTS.md
+	install -D -m 0644 SESSION_MANAGEMENT.md debian/lektor/usr/share/doc/lektor/SESSION_MANAGEMENT.md
+
+override_dh_shlibdeps:
+	dh_shlibdeps --dpkg-shlibdeps-params=--ignore-missing-info

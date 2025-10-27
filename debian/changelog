@@ -1,0 +1,17 @@
+lektor (0.1.0-1) unstable; urgency=medium
+
+  * Initial release
+  * Vim-like modal editing (normal, insert, visual, command modes)
+  * Syntax highlighting for multiple languages
+  * Git integration with diff view
+  * Multiple buffer management
+  * Split panes support
+  * Session management
+  * Undo/redo functionality
+  * Search and replace
+  * File sidebar with directory tree
+  * Customizable themes and configuration
+  * Added Ctrl+O keybinding for opening files
+  * Added :new/:n command for creating new buffers
+
+ -- Lektor Developers <lektor@example.com>  Sun, 27 Oct 2024 16:00:00 +0000

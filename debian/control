@@ -1,0 +1,30 @@
+Source: lektor
+Section: editors
+Priority: optional
+Maintainer: Lektor Developers <lektor@example.com>
+Build-Depends: debhelper (>= 11),
+               cargo,
+               rustc (>= 1.70),
+               libgit2-dev,
+               pkg-config
+Standards-Version: 4.5.1
+Homepage: https://github.com/yourusername/lektor
+Vcs-Git: https://github.com/yourusername/lektor.git
+Vcs-Browser: https://github.com/yourusername/lektor
+
+Package: lektor
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Modern terminal-based text editor written in Rust
+ Lektor is a powerful, modal terminal text editor written in Rust with
+ features including:
+  * Vim-like modal editing with normal, insert, visual, and command modes
+  * Syntax highlighting for multiple programming languages
+  * Git integration with status indicators and diff view
+  * Multiple buffer management
+  * Split panes for viewing multiple files
+  * Session management for saving and restoring workspaces
+  * Undo/redo with full history
+  * Search and replace functionality
+  * Customizable themes and configuration
+  * File sidebar with directory tree navigation

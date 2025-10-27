@@ -599,6 +599,12 @@ impl App {
         match (key.code, key.modifiers) {
             (KeyCode::Char('q'), KeyModifiers::CONTROL) => self.try_quit(),
             (KeyCode::Char('s'), KeyModifiers::CONTROL) => self.save_file()?,
+            (KeyCode::Char('o'), KeyModifiers::CONTROL) => {
+                // Open file - switch to command mode with :e prefix
+                self.mode = Mode::Command;
+                self.command_buffer = String::from("e ");
+                self.status_message = String::from("Enter filename to open");
+            }
             (KeyCode::Char('z'), KeyModifiers::CONTROL) => {
                 // Undo
                 if self.buffer_manager.current_mut().undo() {
@@ -1629,6 +1635,12 @@ impl App {
                 if let Err(e) = self.open_file(&path) {
                     self.status_message = format!("Error opening file: {}", e);
                 }
+            }
+            "new" | "n" => {
+                // Create a new empty buffer
+                self.buffer_manager.new_buffer();
+                self.status_message = String::from("Created new buffer");
+                self.update_viewport();
             }
             "bn" | "bnext" => {
                 if self.buffer_manager.buffer_count() > 1 {

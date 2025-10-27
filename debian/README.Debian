@@ -1,0 +1,36 @@
+lektor for Debian
+------------------
+
+Configuration
+-------------
+
+The example configuration file is installed at:
+  /usr/share/lektor/config.example.toml
+
+To use it, copy it to your home directory:
+  mkdir -p ~/.config/lektor
+  cp /usr/share/lektor/config.example.toml ~/.config/lektor/config.toml
+
+Then edit ~/.config/lektor/config.toml to customize lektor to your preferences.
+
+Documentation
+-------------
+
+Additional documentation can be found at:
+  /usr/share/doc/lektor/
+
+Building from Source
+--------------------
+
+If you want to rebuild this package from source:
+
+1. Install build dependencies:
+   sudo apt-get build-dep lektor
+
+2. Build the package:
+   dpkg-buildpackage -us -uc -b
+
+Or use the provided Makefile:
+   make deb
+
+ -- Lektor Developers <lektor@example.com>  Sun, 27 Oct 2024 16:00:00 +0000
