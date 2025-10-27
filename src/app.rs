@@ -201,7 +201,7 @@ impl App {
         // Initialize split manager if needed
         if self.split_manager.is_none() {
             let terminal_size = crossterm::terminal::size()?;
-            let sidebar_width = if self.show_sidebar { 20 } else { 0 };
+            let sidebar_width = if self.show_sidebar { self.config.sidebar.width } else { 0 };
             self.split_manager = Some(SplitManager::new(
                 self.buffer_manager.current_index,
                 terminal_size.0,
@@ -235,7 +235,7 @@ impl App {
         // Initialize split manager if needed
         if self.split_manager.is_none() {
             let terminal_size = crossterm::terminal::size()?;
-            let sidebar_width = if self.show_sidebar { 20 } else { 0 };
+            let sidebar_width = if self.show_sidebar { self.config.sidebar.width } else { 0 };
             self.split_manager = Some(SplitManager::new(
                 self.buffer_manager.current_index,
                 terminal_size.0,
@@ -544,6 +544,19 @@ impl App {
                 String::from("Buffer saved")
             };
 
+            // Check if this is the config file and reload if so
+            if let Some(path) = &self.buffer_manager.current().file_path {
+                if let Ok(config_path) = Config::config_path() {
+                    if path == &config_path {
+                        if let Err(e) = self.reload_config() {
+                            self.status_message = format!("Config saved but reload failed: {}", e);
+                        } else {
+                            self.status_message = String::from("Config saved and reloaded!");
+                        }
+                    }
+                }
+            }
+
             // Update git cache after saving
             self.update_git_cache();
 
@@ -552,6 +565,18 @@ impl App {
                 sidebar.refresh()?;
             }
         }
+        Ok(())
+    }
+
+    pub fn reload_config(&mut self) -> Result<()> {
+        // Reload configuration from disk
+        self.config = Config::load()?;
+        self.status_message = String::from("Configuration reloaded");
+
+        // Apply settings that can be changed at runtime
+        // The sidebar width will be applied on next render
+        // Other settings like syntax highlighting are already reactive
+
         Ok(())
     }
 
@@ -1622,11 +1647,33 @@ impl App {
                     }
 
                     self.status_message = format!("Saved: {}", path.display());
+
+                    // Check if this is the config file and reload if so
+                    if let Ok(config_path) = Config::config_path() {
+                        if path == config_path {
+                            if let Err(e) = self.reload_config() {
+                                self.status_message = format!("Config saved but reload failed: {}", e);
+                            } else {
+                                self.status_message = String::from("Config saved and reloaded!");
+                            }
+                        }
+                    }
                 } else if self.buffer_manager.current().file_path.is_some() {
                     // Save existing file
                     self.buffer_manager.current_mut().save()?;
                     if let Some(path) = &self.buffer_manager.current().file_path {
                         self.status_message = format!("Saved: {}", path.display());
+
+                        // Check if this is the config file and reload if so
+                        if let Ok(config_path) = Config::config_path() {
+                            if path == &config_path {
+                                if let Err(e) = self.reload_config() {
+                                    self.status_message = format!("Config saved but reload failed: {}", e);
+                                } else {
+                                    self.status_message = String::from("Config saved and reloaded!");
+                                }
+                            }
+                        }
                     }
                 } else {
                     // No filename provided for new file
@@ -1649,13 +1696,37 @@ impl App {
                         self.buffer_manager.current_mut().syntax_name = Some(syntax.name.clone());
                     }
 
+                    // Check if this is the config file and reload if so
+                    if let Ok(config_path) = Config::config_path() {
+                        if path == config_path {
+                            let _ = self.reload_config(); // Reload but ignore errors since we're quitting
+                        }
+                    }
+
                     // Refresh sidebar after saving
                     if let Some(sidebar) = &mut self.sidebar {
                         sidebar.refresh()?;
                     }
                     self.should_quit = true;
                 } else if self.buffer_manager.current().file_path.is_some() {
+                    // Save existing file
+                    let is_config = if let Some(path) = &self.buffer_manager.current().file_path {
+                        if let Ok(config_path) = Config::config_path() {
+                            path == &config_path
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
                     self.buffer_manager.current_mut().save()?;
+
+                    // Reload config if this was the config file
+                    if is_config {
+                        let _ = self.reload_config(); // Reload but ignore errors since we're quitting
+                    }
+
                     // Refresh sidebar after saving
                     if let Some(sidebar) = &mut self.sidebar {
                         sidebar.refresh()?;
@@ -1673,6 +1744,21 @@ impl App {
                 let path = PathBuf::from(parts[1]);
                 if let Err(e) = self.open_file(&path) {
                     self.status_message = format!("Error opening file: {}", e);
+                }
+            }
+            "config" => {
+                // Open the configuration file for editing
+                match Config::config_path() {
+                    Ok(config_path) => {
+                        if let Err(e) = self.open_file(&config_path) {
+                            self.status_message = format!("Error opening config: {}", e);
+                        } else {
+                            self.status_message = format!("Editing config file. Changes will apply on save.");
+                        }
+                    }
+                    Err(e) => {
+                        self.status_message = format!("Error finding config: {}", e);
+                    }
                 }
             }
             "new" | "n" => {

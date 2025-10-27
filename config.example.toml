@@ -10,6 +10,12 @@ highlight_current_line = true
 word_wrap = false
 auto_save = false
 auto_save_interval = 30
+rainbow_brackets = true
+highlight_matching_bracket = true
+show_column_ruler = true
+column_ruler_positions = [80, 100, 120]
+show_whitespace = false
+show_indent_guides = true
 
 [theme]
 name = "Dark"
@@ -27,4 +33,12 @@ toggle_sidebar = "Ctrl+B"
 [sidebar]
 show_hidden_files = false
 show_git_status = true
+# Width of the sidebar in characters (default: 25)
 width = 25
+
+[session]
+auto_save = true
+auto_restore = true
+workspace_sessions = true
+restore_cursor_position = true
+restore_open_buffers = true
