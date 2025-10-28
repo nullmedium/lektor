@@ -13,6 +13,7 @@ pub struct TextBuffer {
     pub selection: Option<Selection>,
     pub syntax_name: Option<String>,
     pub undo_manager: UndoManager,
+    pub version: u64, // Incremented on every content change for cache invalidation
 }
 
 impl Default for UndoManager {
@@ -72,6 +73,7 @@ impl TextBuffer {
             selection: None,
             syntax_name: None,
             undo_manager: UndoManager::new(),
+            version: 0,
         }
     }
 
@@ -87,6 +89,7 @@ impl TextBuffer {
             selection: None,
             syntax_name: None,
             undo_manager: UndoManager::new(),
+            version: 0,
         })
     }
 
@@ -693,6 +696,59 @@ impl TextBuffer {
             self.cursor_position = (pos.0, pos.1 + replace_with.len());
             self.modified = true;
         }
+    }
+
+    /// Compute bracket depths for all positions in a line
+    /// Returns a vector where each index contains the bracket depth at that character position
+    /// This is much more efficient than calling get_bracket_depth_at() for each bracket
+    pub fn compute_line_bracket_depths(&self, line_num: usize, initial_depth: usize) -> Vec<usize> {
+        let line = self.get_line(line_num);
+        let chars: Vec<char> = line.chars().collect();
+        let mut depths = Vec::with_capacity(chars.len());
+        let mut depth = initial_depth;
+
+        let brackets = [('(', ')'), ('[', ']'), ('{', '}')];
+
+        for ch in &chars {
+            // Store depth at this position (before processing the character)
+            depths.push(depth);
+
+            // Update depth based on bracket
+            for (open, close) in &brackets {
+                if *ch == *open {
+                    depth += 1;
+                    break;
+                } else if *ch == *close {
+                    depth = depth.saturating_sub(1);
+                    break;
+                }
+            }
+        }
+
+        depths
+    }
+
+    /// Compute the bracket depth at the start of a line (depth from all previous lines)
+    pub fn compute_initial_depth_for_line(&self, line_num: usize) -> usize {
+        let mut depth: usize = 0;
+        let brackets = [('(', ')'), ('[', ']'), ('{', '}')];
+
+        for row in 0..line_num {
+            let line = self.get_line(row);
+            for ch in line.chars() {
+                for (open, close) in &brackets {
+                    if ch == *open {
+                        depth += 1;
+                        break;
+                    } else if ch == *close {
+                        depth = depth.saturating_sub(1);
+                        break;
+                    }
+                }
+            }
+        }
+
+        depth
     }
 
     pub fn get_bracket_depth_at(&self, pos: (usize, usize)) -> usize {

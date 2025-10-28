@@ -1,6 +1,7 @@
 use crate::buffer::TextBuffer;
 use crate::buffer_manager::BufferManager;
 use crate::config::Config;
+use crate::render_cache::RenderCache;
 use crate::sidebar::{GitStatus, Sidebar, SidebarMode};
 use crate::split::{SplitManager, SplitDirection, Pane};
 use crate::syntax::SyntaxHighlighter;
@@ -56,6 +57,7 @@ pub struct App {
     git_status_cache: Option<(usize, usize)>, // (staged, modified)
     git_cache_timestamp: std::time::Instant,
     diff_info: Option<DiffInfo>, // Track diff information for highlighting
+    render_cache: RenderCache, // Cache for expensive rendering calculations
 }
 
 #[derive(Debug, Clone)]
@@ -182,6 +184,7 @@ impl App {
             git_status_cache,
             git_cache_timestamp: Instant::now(),
             diff_info: None,
+            render_cache: RenderCache::new(),
         })
     }
 
@@ -2775,6 +2778,22 @@ impl App {
                         let mut char_pos = 0;     // Character position in the line
                         let line_chars: Vec<char> = line.chars().collect();
 
+                        // Get or compute bracket depths for this line (cache for performance)
+                        let buffer_idx = self.buffer_manager.current_index;
+                        let buffer_version = buffer.version;
+                        let cache_key = (buffer_idx, row, buffer_version);
+
+                        let bracket_depths = if let Some(depths) = self.render_cache.bracket_depth_cache.get(&cache_key) {
+                            // Use cached depths
+                            depths.clone()
+                        } else {
+                            // Compute depths and cache them
+                            let initial_depth = buffer.compute_initial_depth_for_line(row);
+                            let depths = buffer.compute_line_bracket_depths(row, initial_depth);
+                            self.render_cache.bracket_depth_cache.insert(cache_key, depths.clone());
+                            depths
+                        };
+
                         for (style, text) in highlighted {
                             for ch in text.chars() {
                                 let is_bracket = matches!(ch, '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>');
@@ -2810,8 +2829,8 @@ impl App {
                                     ch == ' ';
 
                                 if is_bracket && self.config.editor.rainbow_brackets {
-                                    // Get bracket depth for rainbow coloring
-                                    let depth = buffer.get_bracket_depth_at((row, char_pos));
+                                    // Get bracket depth for rainbow coloring (from cache)
+                                    let depth = bracket_depths.get(char_pos).copied().unwrap_or(0);
                                     ratatui_style = ratatui_style.fg(self.get_rainbow_color(depth));
 
                                     // Highlight matching brackets
@@ -3191,6 +3210,23 @@ impl App {
 
             // Simple rendering with selection support (no syntax highlighting for now when selection is active)
             if self.buffer_manager.current().selection.is_some() {
+                // Get or compute bracket depths for this line (cache for performance)
+                let buffer = self.buffer_manager.current();
+                let buffer_idx = self.buffer_manager.current_index;
+                let buffer_version = buffer.version;
+                let cache_key = (buffer_idx, row, buffer_version);
+
+                let bracket_depths = if let Some(depths) = self.render_cache.bracket_depth_cache.get(&cache_key) {
+                    // Use cached depths
+                    depths.clone()
+                } else {
+                    // Compute depths and cache them
+                    let initial_depth = buffer.compute_initial_depth_for_line(row);
+                    let depths = buffer.compute_line_bracket_depths(row, initial_depth);
+                    self.render_cache.bracket_depth_cache.insert(cache_key, depths.clone());
+                    depths
+                };
+
                 for ch in line.chars() {
                     let is_selected = self.buffer_manager.current().is_position_selected(row, col);
                     let is_bracket = matches!(ch, '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>');
@@ -3225,8 +3261,8 @@ impl App {
                         spans.push(Span::styled("│", style));
                     } else {
                         if is_bracket && self.config.editor.rainbow_brackets && !is_selected {
-                            // Get bracket depth for rainbow coloring
-                            let depth = self.buffer_manager.current().get_bracket_depth_at((row, col));
+                            // Get bracket depth for rainbow coloring (from cache)
+                            let depth = bracket_depths.get(col).copied().unwrap_or(0);
                             style = style.fg(self.get_rainbow_color(depth));
 
                             // Highlight matching brackets
@@ -3266,6 +3302,24 @@ impl App {
                     if let Ok(highlighted) = self.syntax_highlighter.highlight_line(line, syntax) {
                         let mut current_col = 0;  // Visual column position
                         let mut char_pos = 0;     // Character position in the line
+
+                        // Get or compute bracket depths for this line (cache for performance)
+                        let buffer = self.buffer_manager.current();
+                        let buffer_idx = self.buffer_manager.current_index;
+                        let buffer_version = buffer.version;
+                        let cache_key = (buffer_idx, row, buffer_version);
+
+                        let bracket_depths = if let Some(depths) = self.render_cache.bracket_depth_cache.get(&cache_key) {
+                            // Use cached depths
+                            depths.clone()
+                        } else {
+                            // Compute depths and cache them
+                            let initial_depth = buffer.compute_initial_depth_for_line(row);
+                            let depths = buffer.compute_line_bracket_depths(row, initial_depth);
+                            self.render_cache.bracket_depth_cache.insert(cache_key, depths.clone());
+                            depths
+                        };
+
                         for (style, text) in highlighted {
                             for ch in text.chars() {
                                 let is_bracket = matches!(ch, '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>');
@@ -3301,8 +3355,8 @@ impl App {
                                     ch == ' ';
 
                                 if is_bracket && self.config.editor.rainbow_brackets {
-                                    // Get bracket depth for rainbow coloring
-                                    let depth = self.buffer_manager.current().get_bracket_depth_at((row, char_pos));
+                                    // Get bracket depth for rainbow coloring (from cache)
+                                    let depth = bracket_depths.get(char_pos).copied().unwrap_or(0);
                                     ratatui_style = ratatui_style.fg(self.get_rainbow_color(depth));
 
                                     // Highlight matching brackets
@@ -3386,6 +3440,23 @@ impl App {
                     }
                 } else {
                     // No syntax highlighting available - still handle brackets and visual feedback
+                    // Get or compute bracket depths for this line (cache for performance)
+                    let buffer = self.buffer_manager.current();
+                    let buffer_idx = self.buffer_manager.current_index;
+                    let buffer_version = buffer.version;
+                    let cache_key = (buffer_idx, row, buffer_version);
+
+                    let bracket_depths = if let Some(depths) = self.render_cache.bracket_depth_cache.get(&cache_key) {
+                        // Use cached depths
+                        depths.clone()
+                    } else {
+                        // Compute depths and cache them
+                        let initial_depth = buffer.compute_initial_depth_for_line(row);
+                        let depths = buffer.compute_line_bracket_depths(row, initial_depth);
+                        self.render_cache.bracket_depth_cache.insert(cache_key, depths.clone());
+                        depths
+                    };
+
                     for ch in line.chars() {
                         let is_bracket = matches!(ch, '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>');
                         let mut style = get_ui_style(theme, "foreground");
@@ -3419,8 +3490,8 @@ impl App {
                             spans.push(Span::styled("│", style));
                         } else {
                             if is_bracket && self.config.editor.rainbow_brackets {
-                                // Get bracket depth for rainbow coloring
-                                let depth = self.buffer_manager.current().get_bracket_depth_at((row, col));
+                                // Get bracket depth for rainbow coloring (from cache)
+                                let depth = bracket_depths.get(col).copied().unwrap_or(0);
                                 style = style.fg(self.get_rainbow_color(depth));
 
                                 // Highlight matching brackets

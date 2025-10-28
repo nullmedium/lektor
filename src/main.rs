@@ -3,6 +3,7 @@ mod buffer;
 mod buffer_manager;
 mod config;
 mod cursor;
+mod render_cache;
 mod session;
 mod session_handler;
 mod session_commands;
