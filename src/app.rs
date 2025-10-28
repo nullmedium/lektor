@@ -2719,7 +2719,8 @@ impl App {
 
         for (i, line) in lines.iter().enumerate() {
             let line_number = pane.viewport_offset + i + 1;
-            let mut spans = Vec::new();
+            // Pre-allocate capacity to reduce reallocations (estimate: line length + line number + margin)
+            let mut spans = Vec::with_capacity(line.len() + 10);
 
             // Check if this line should be highlighted for diff
             let mut line_bg_color: Option<ratatui::style::Color> = None;
@@ -2788,7 +2789,9 @@ impl App {
                     if let Ok(highlighted) = self.syntax_highlighter.highlight_line(line, syntax) {
                         let mut current_col = 0;  // Visual column position
                         let mut char_pos = 0;     // Character position in the line
-                        let line_chars: Vec<char> = line.chars().collect();
+
+                        // Cache line metadata to avoid redundant iterations
+                        let trimmed_len = line.trim_end().len();
 
                         // Get or compute bracket depths for this line (cache for performance)
                         let buffer_idx = self.buffer_manager.current_index;
@@ -2832,7 +2835,7 @@ impl App {
                                 // Check for trailing whitespace
                                 let is_trailing_whitespace = self.config.editor.show_whitespace &&
                                     (ch == ' ' || ch == '\t') &&
-                                    char_pos >= line.trim_end().len();
+                                    char_pos >= trimmed_len;
 
                                 // Check for indent guide
                                 let is_indent_guide = self.config.editor.show_indent_guides &&
@@ -3167,7 +3170,8 @@ impl App {
 
         for (i, line) in lines.iter().enumerate() {
             let line_number = self.viewport_offset + i + 1;
-            let mut spans = Vec::new();
+            // Pre-allocate capacity to reduce reallocations (estimate: line length + line number + margin)
+            let mut spans = Vec::with_capacity(line.len() + 10);
 
             if self.config.editor.show_line_numbers {
                 spans.push(Span::styled(
@@ -3318,6 +3322,9 @@ impl App {
                         let mut current_col = 0;  // Visual column position
                         let mut char_pos = 0;     // Character position in the line
 
+                        // Cache line metadata to avoid redundant iterations
+                        let trimmed_len = line.trim_end().len();
+
                         // Get or compute bracket depths for this line (cache for performance)
                         let buffer = self.buffer_manager.current();
                         let buffer_idx = self.buffer_manager.current_index;
@@ -3361,7 +3368,7 @@ impl App {
                                 // Check for trailing whitespace
                                 let is_trailing_whitespace = self.config.editor.show_whitespace &&
                                     (ch == ' ' || ch == '\t') &&
-                                    char_pos >= line.trim_end().len();
+                                    char_pos >= trimmed_len;
 
                                 // Check for indent guide
                                 let is_indent_guide = self.config.editor.show_indent_guides &&
