@@ -42,6 +42,7 @@ pub struct App {
     pub status_message: String,
     pub show_sidebar: bool,
     pub viewport_offset: usize,
+    pub viewport_height: usize, // Actual terminal height for proper scrolling
     pub command_buffer: String,
     clipboard: Option<Clipboard>,
     search_query: String,
@@ -169,6 +170,7 @@ impl App {
             status_message: String::from("Ready"),
             show_sidebar: true,
             viewport_offset: 0,
+            viewport_height: 20, // Will be updated on first draw
             command_buffer: String::new(),
             clipboard,
             search_query: String::new(),
@@ -1857,13 +1859,17 @@ impl App {
     }
 
     fn update_viewport(&mut self) {
-        let viewport_height = 20;
+        let viewport_height = self.viewport_height;
         let cursor_row = self.buffer_manager.current().cursor_position.0;
+        let scroll_margin = 5; // Lines from top/bottom before scrolling starts
 
-        if cursor_row < self.viewport_offset {
-            self.viewport_offset = cursor_row;
-        } else if cursor_row >= self.viewport_offset + viewport_height {
-            self.viewport_offset = cursor_row - viewport_height + 1;
+        // Only scroll when cursor gets within scroll_margin lines of the edges
+        if cursor_row < self.viewport_offset + scroll_margin {
+            // Scroll up
+            self.viewport_offset = cursor_row.saturating_sub(scroll_margin);
+        } else if cursor_row >= self.viewport_offset + viewport_height.saturating_sub(scroll_margin) {
+            // Scroll down
+            self.viewport_offset = cursor_row + scroll_margin + 1 - viewport_height.min(cursor_row + scroll_margin + 1);
         }
     }
 
@@ -2693,6 +2699,12 @@ impl App {
 
         // Draw the buffer content with syntax highlighting
         let viewport_height = area.height as usize;
+
+        // Update stored viewport height for scrolling calculations (use the active pane's height)
+        if is_active {
+            self.viewport_height = viewport_height;
+        }
+
         let lines = buffer.get_visible_lines(pane.viewport_offset, viewport_height);
         let mut paragraph_lines = Vec::new();
 
@@ -3137,6 +3149,9 @@ impl App {
     fn draw_editor(&mut self, frame: &mut Frame, area: Rect) {
         let theme = self.theme_manager.get_current_theme();
         let viewport_height = area.height as usize;
+
+        // Update stored viewport height for scrolling calculations
+        self.viewport_height = viewport_height;
 
         let lines = self.buffer_manager.current().get_visible_lines(self.viewport_offset, viewport_height);
         let mut paragraph_lines = Vec::new();
