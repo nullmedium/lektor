@@ -1792,19 +1792,15 @@ impl App {
                 }
             }
             "bd" | "bdelete" => {
-                if self.buffer_manager.buffer_count() > 1 {
-                    if let Some(path) = &self.buffer_manager.current().file_path {
-                        let filename = path.file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_else(|| "[No Name]".to_string());
-                        self.buffer_manager.close_current()?;
-                        self.status_message = format!("Closed: {}", filename);
-                    } else {
-                        self.buffer_manager.close_current()?;
-                        self.status_message = String::from("Closed: [No Name]");
-                    }
+                if let Some(path) = &self.buffer_manager.current().file_path {
+                    let filename = path.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "[No Name]".to_string());
+                    self.buffer_manager.close_current()?;
+                    self.status_message = format!("Closed: {}", filename);
                 } else {
-                    self.status_message = String::from("Cannot close last buffer");
+                    self.buffer_manager.close_current()?;
+                    self.status_message = String::from("Closed: [No Name]");
                 }
             }
             "ls" | "buffers" => {
@@ -2761,6 +2757,9 @@ impl App {
             // Build spans character by character to handle selection
             let row = pane.viewport_offset + i;
 
+            // Check if this is an actual line in the buffer (not past EOF)
+            let is_actual_line = row < buffer.line_count();
+
             // Calculate indent level for indent guides
             let indent_level = if self.config.editor.show_indent_guides {
                 line.chars().take_while(|c| *c == ' ' || *c == '\t').count() / self.config.editor.tab_width
@@ -2772,7 +2771,8 @@ impl App {
             if buffer.selection.is_none() && syntax.is_some() {
                 if let Some(syntax) = syntax {
                     if let Ok(highlighted) = self.syntax_highlighter.highlight_line(line, syntax) {
-                        let mut current_col = 0;
+                        let mut current_col = 0;  // Visual column position
+                        let mut char_pos = 0;     // Character position in the line
                         let line_chars: Vec<char> = line.chars().collect();
 
                         for (style, text) in highlighted {
@@ -2783,13 +2783,9 @@ impl App {
                                 // Check if this position matches the bracket under cursor or its match
                                 let is_matching_bracket = matching_bracket
                                     .map_or(false, |(match_row, match_col)|
-                                        match_row == row && match_col == current_col
+                                        match_row == row && match_col == char_pos
                                     );
-                                let is_cursor_bracket = is_active && cursor_row == row && cursor_pos.1 == current_col;
-
-                                // Check for column ruler
-                                let is_column_ruler = self.config.editor.show_column_ruler &&
-                                    self.config.editor.column_ruler_positions.contains(&current_col);
+                                let is_cursor_bracket = is_active && cursor_row == row && cursor_pos.1 == char_pos;
 
                                 // Check for whitespace visualization
                                 let display_char = if self.config.editor.show_whitespace {
@@ -2805,7 +2801,7 @@ impl App {
                                 // Check for trailing whitespace
                                 let is_trailing_whitespace = self.config.editor.show_whitespace &&
                                     (ch == ' ' || ch == '\t') &&
-                                    current_col >= line.trim_end().len();
+                                    char_pos >= line.trim_end().len();
 
                                 // Check for indent guide
                                 let is_indent_guide = self.config.editor.show_indent_guides &&
@@ -2815,7 +2811,7 @@ impl App {
 
                                 if is_bracket && self.config.editor.rainbow_brackets {
                                     // Get bracket depth for rainbow coloring
-                                    let depth = buffer.get_bracket_depth_at((row, current_col));
+                                    let depth = buffer.get_bracket_depth_at((row, char_pos));
                                     ratatui_style = ratatui_style.fg(self.get_rainbow_color(depth));
 
                                     // Highlight matching brackets
@@ -2831,11 +2827,9 @@ impl App {
                                     // Draw indent guide
                                     ratatui_style = ratatui_style.fg(ratatui::style::Color::Rgb(60, 60, 60));
                                     spans.push(Span::styled("│", ratatui_style));
+                                    char_pos += 1;
                                     current_col += 1;
                                     continue;
-                                } else if is_column_ruler {
-                                    // Highlight column ruler position
-                                    ratatui_style = ratatui_style.bg(ratatui::style::Color::Rgb(40, 40, 40));
                                 } else if self.config.editor.show_whitespace && (ch == ' ' || ch == '\t') {
                                     // Dim whitespace characters
                                     ratatui_style = ratatui_style.fg(ratatui::style::Color::Rgb(80, 80, 80));
@@ -2869,29 +2863,40 @@ impl App {
 
                                 // Apply current line highlighting (only if no diff background)
                                 if is_current_line && self.config.editor.highlight_current_line && line_bg_color.is_none() {
-                                    if !is_matching_bracket && !is_cursor_bracket && !is_column_ruler {
+                                    if !is_matching_bracket && !is_cursor_bracket {
                                         ratatui_style = ratatui_style.bg(hex_to_color(&theme.ui.current_line));
                                     }
                                 }
 
                                 spans.push(Span::styled(display_char.to_string(), ratatui_style));
-                                current_col += 1;
+
+                                // Increment character position
+                                char_pos += 1;
+
+                                // Increment column position, accounting for tab width
+                                if ch == '\t' {
+                                    // Calculate how many columns this tab should occupy
+                                    let tab_stop = self.config.editor.tab_width;
+                                    let next_tab_stop = ((current_col / tab_stop) + 1) * tab_stop;
+                                    current_col = next_tab_stop;
+                                } else {
+                                    current_col += 1;
+                                }
                             }
                         }
 
-                        // Add column rulers for positions beyond line length
-                        if self.config.editor.show_column_ruler {
+                        // Add column rulers for positions beyond line length (only for actual lines in file)
+                        if self.config.editor.show_column_ruler && is_actual_line {
                             for &ruler_pos in &self.config.editor.column_ruler_positions {
-                                if ruler_pos >= current_col {
-                                    let spaces_to_ruler = ruler_pos - current_col;
+                                if ruler_pos > current_col {
+                                    let spaces_to_ruler = ruler_pos - current_col - 1;
                                     for _ in 0..spaces_to_ruler {
                                         spans.push(Span::styled(" ", Style::default()));
                                         current_col += 1;
                                     }
-                                    if ruler_pos == current_col {
-                                        spans.push(Span::styled("│", Style::default()
-                                            .fg(ratatui::style::Color::Rgb(60, 60, 60))));
-                                    }
+                                    spans.push(Span::styled("│", Style::default()
+                                        .fg(hex_to_color(&self.config.editor.column_ruler_color))));
+                                    current_col += 1;
                                 }
                             }
                         }
@@ -2948,7 +2953,15 @@ impl App {
 
                         spans.push(Span::styled(display_char.to_string(), style));
                     }
-                    col += 1;
+
+                    // Increment column position, accounting for tab width
+                    if ch == '\t' {
+                        let tab_stop = self.config.editor.tab_width;
+                        let next_tab_stop = ((col / tab_stop) + 1) * tab_stop;
+                        col = next_tab_stop;
+                    } else {
+                        col += 1;
+                    }
                 }
             } else {
                 // Simple text rendering without syntax highlighting
@@ -2990,7 +3003,15 @@ impl App {
 
                         spans.push(Span::styled(display_char.to_string(), style));
                     }
-                    col += 1;
+
+                    // Increment column position, accounting for tab width
+                    if ch == '\t' {
+                        let tab_stop = self.config.editor.tab_width;
+                        let next_tab_stop = ((col / tab_stop) + 1) * tab_stop;
+                        col = next_tab_stop;
+                    } else {
+                        col += 1;
+                    }
                 }
             }
 
@@ -3123,7 +3144,29 @@ impl App {
 
             let cursor_pos = self.buffer_manager.current().cursor_position;
             let cursor_row = cursor_pos.0;
-            let is_current_line = self.viewport_offset + i == cursor_row;
+
+            // Calculate visual length of the line (accounting for tabs)
+            let mut visual_length = 0;
+            for ch in line.chars() {
+                if ch == '\t' {
+                    let tab_stop = self.config.editor.tab_width;
+                    let next_tab_stop = ((visual_length / tab_stop) + 1) * tab_stop;
+                    visual_length = next_tab_stop;
+                } else {
+                    visual_length += 1;
+                }
+            }
+
+            // Calculate available width (subtract line numbers if shown)
+            let available_width = if self.config.editor.show_line_numbers {
+                area.width.saturating_sub(5) as usize
+            } else {
+                area.width as usize
+            };
+
+            // Disable current line highlighting if the line would wrap
+            let line_would_wrap = visual_length > available_width;
+            let is_current_line = self.viewport_offset + i == cursor_row && !line_would_wrap;
 
             // Check for matching bracket at cursor position
             let matching_bracket = if cursor_row == self.viewport_offset + i && self.config.editor.highlight_matching_bracket {
@@ -3135,6 +3178,9 @@ impl App {
             // Build spans character by character to handle selection
             let row = self.viewport_offset + i;
             let mut col = 0;
+
+            // Check if this is an actual line in the buffer (not past EOF)
+            let is_actual_line = row < self.buffer_manager.current().line_count();
 
             // Calculate indent level for indent guides
             let indent_level = if self.config.editor.show_indent_guides {
@@ -3204,13 +3250,22 @@ impl App {
 
                         spans.push(Span::styled(display_char.to_string(), style));
                     }
-                    col += 1;
+
+                    // Increment column position, accounting for tab width
+                    if ch == '\t' {
+                        let tab_stop = self.config.editor.tab_width;
+                        let next_tab_stop = ((col / tab_stop) + 1) * tab_stop;
+                        col = next_tab_stop;
+                    } else {
+                        col += 1;
+                    }
                 }
             } else {
                 // Apply syntax highlighting if available and no selection
                 if let Some(syntax) = syntax {
                     if let Ok(highlighted) = self.syntax_highlighter.highlight_line(line, syntax) {
-                        let mut current_col = 0;
+                        let mut current_col = 0;  // Visual column position
+                        let mut char_pos = 0;     // Character position in the line
                         for (style, text) in highlighted {
                             for ch in text.chars() {
                                 let is_bracket = matches!(ch, '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>');
@@ -3219,13 +3274,9 @@ impl App {
                                 // Check if this position matches the bracket under cursor or its match
                                 let is_matching_bracket = matching_bracket
                                     .map_or(false, |(match_row, match_col)|
-                                        match_row == row && match_col == current_col
+                                        match_row == row && match_col == char_pos
                                     );
-                                let is_cursor_bracket = cursor_row == row && cursor_pos.1 == current_col;
-
-                                // Check for column ruler
-                                let is_column_ruler = self.config.editor.show_column_ruler &&
-                                    self.config.editor.column_ruler_positions.contains(&current_col);
+                                let is_cursor_bracket = cursor_row == row && cursor_pos.1 == char_pos;
 
                                 // Check for whitespace visualization
                                 let display_char = if self.config.editor.show_whitespace {
@@ -3241,7 +3292,7 @@ impl App {
                                 // Check for trailing whitespace
                                 let is_trailing_whitespace = self.config.editor.show_whitespace &&
                                     (ch == ' ' || ch == '\t') &&
-                                    current_col >= line.trim_end().len();
+                                    char_pos >= line.trim_end().len();
 
                                 // Check for indent guide
                                 let is_indent_guide = self.config.editor.show_indent_guides &&
@@ -3251,7 +3302,7 @@ impl App {
 
                                 if is_bracket && self.config.editor.rainbow_brackets {
                                     // Get bracket depth for rainbow coloring
-                                    let depth = self.buffer_manager.current().get_bracket_depth_at((row, current_col));
+                                    let depth = self.buffer_manager.current().get_bracket_depth_at((row, char_pos));
                                     ratatui_style = ratatui_style.fg(self.get_rainbow_color(depth));
 
                                     // Highlight matching brackets
@@ -3267,11 +3318,9 @@ impl App {
                                     // Draw indent guide
                                     ratatui_style = ratatui_style.fg(ratatui::style::Color::Rgb(60, 60, 60));
                                     spans.push(Span::styled("│", ratatui_style));
+                                    char_pos += 1;
                                     current_col += 1;
                                     continue;
-                                } else if is_column_ruler {
-                                    // Highlight column ruler position
-                                    ratatui_style = ratatui_style.bg(ratatui::style::Color::Rgb(40, 40, 40));
                                 } else if self.config.editor.show_whitespace && (ch == ' ' || ch == '\t') {
                                     // Dim whitespace characters
                                     ratatui_style = ratatui_style.fg(ratatui::style::Color::Rgb(80, 80, 80));
@@ -3285,29 +3334,39 @@ impl App {
                                 }
 
                                 if is_current_line && self.config.editor.highlight_current_line {
-                                    if !is_matching_bracket && !is_cursor_bracket && !is_column_ruler {
+                                    if !is_matching_bracket && !is_cursor_bracket {
                                         ratatui_style = ratatui_style.bg(hex_to_color(&theme.ui.current_line));
                                     }
                                 }
 
                                 spans.push(Span::styled(display_char.to_string(), ratatui_style));
-                                current_col += 1;
+
+                                // Increment character position
+                                char_pos += 1;
+
+                                // Increment column position, accounting for tab width
+                                if ch == '\t' {
+                                    let tab_stop = self.config.editor.tab_width;
+                                    let next_tab_stop = ((current_col / tab_stop) + 1) * tab_stop;
+                                    current_col = next_tab_stop;
+                                } else {
+                                    current_col += 1;
+                                }
                             }
                         }
 
-                        // Add column rulers for positions beyond line length
-                        if self.config.editor.show_column_ruler {
+                        // Add column rulers for positions beyond line length (only for actual lines in file)
+                        if self.config.editor.show_column_ruler && is_actual_line {
                             for &ruler_pos in &self.config.editor.column_ruler_positions {
-                                if ruler_pos >= current_col {
-                                    let spaces_to_ruler = ruler_pos - current_col;
+                                if ruler_pos > current_col {
+                                    let spaces_to_ruler = ruler_pos - current_col - 1;
                                     for _ in 0..spaces_to_ruler {
                                         spans.push(Span::styled(" ", Style::default()));
                                         current_col += 1;
                                     }
-                                    if ruler_pos == current_col {
-                                        spans.push(Span::styled("│", Style::default()
-                                            .fg(ratatui::style::Color::Rgb(60, 60, 60))));
-                                    }
+                                    spans.push(Span::styled("│", Style::default()
+                                        .fg(hex_to_color(&self.config.editor.column_ruler_color))));
+                                    current_col += 1;
                                 }
                             }
                         }
@@ -3383,7 +3442,15 @@ impl App {
 
                             spans.push(Span::styled(display_char.to_string(), style));
                         }
-                        col += 1;
+
+                        // Increment column position, accounting for tab width
+                        if ch == '\t' {
+                            let tab_stop = self.config.editor.tab_width;
+                            let next_tab_stop = ((col / tab_stop) + 1) * tab_stop;
+                            col = next_tab_stop;
+                        } else {
+                            col += 1;
+                        }
                     }
                 }
             }
@@ -3391,9 +3458,13 @@ impl App {
             paragraph_lines.push(Line::from(spans));
         }
 
-        let editor_widget = Paragraph::new(paragraph_lines)
-            .style(Style::default().bg(hex_to_color(&theme.ui.background)))
-            .wrap(Wrap { trim: false });
+        let mut editor_widget = Paragraph::new(paragraph_lines)
+            .style(Style::default().bg(hex_to_color(&theme.ui.background)));
+
+        // Only enable wrapping if configured
+        if self.config.editor.word_wrap {
+            editor_widget = editor_widget.wrap(Wrap { trim: false });
+        }
 
         frame.render_widget(editor_widget, area);
 

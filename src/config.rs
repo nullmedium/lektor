@@ -27,6 +27,7 @@ pub struct EditorConfig {
     // Visual feedback settings
     pub show_column_ruler: bool,
     pub column_ruler_positions: Vec<usize>,
+    pub column_ruler_color: String,
     pub show_whitespace: bool,
     pub show_indent_guides: bool,
 }
@@ -80,6 +81,7 @@ impl Default for Config {
                 highlight_matching_bracket: true,
                 show_column_ruler: true,
                 column_ruler_positions: vec![80, 100, 120],
+                column_ruler_color: String::from("#ff6666"),
                 show_whitespace: false,
                 show_indent_guides: true,
             },
