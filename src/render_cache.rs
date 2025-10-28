@@ -1,11 +1,18 @@
 use std::collections::HashMap;
 use ratatui::text::Span;
 
+/// Cached syntax highlighting segment - stores color and text for a portion of a line
+#[derive(Debug, Clone)]
+pub struct CachedSyntaxSegment {
+    pub foreground: (u8, u8, u8),
+    pub text: String,
+}
+
 /// Cache for expensive rendering calculations
 #[derive(Debug, Default)]
 pub struct RenderCache {
-    /// Syntax highlighting cache: (buffer_index, line_num, version) -> spans
-    pub syntax_cache: HashMap<(usize, usize, u64), Vec<Span<'static>>>,
+    /// Syntax highlighting cache: (buffer_index, line_num, version) -> syntax segments
+    pub syntax_cache: HashMap<(usize, usize, u64), Vec<CachedSyntaxSegment>>,
 
     /// Bracket depth cache: (buffer_index, line_num, version) -> vec of depths per char position
     pub bracket_depth_cache: HashMap<(usize, usize, u64), Vec<usize>>,
