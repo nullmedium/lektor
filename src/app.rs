@@ -2955,20 +2955,22 @@ impl App {
 
                         // Add column rulers for positions beyond line length (only for actual lines in file)
                         if self.config.editor.show_column_ruler && is_actual_line {
+                            // Start from the max of current_col or horizontal_offset to handle scrolled lines
+                            let start_col = current_col.max(pane.horizontal_offset);
+                            let mut ruler_col = start_col;
+
                             for &ruler_pos in &self.config.editor.column_ruler_positions {
-                                if ruler_pos > current_col && ruler_pos >= pane.horizontal_offset && ruler_pos < pane.horizontal_offset + visible_width {
-                                    let spaces_to_ruler = ruler_pos - current_col - 1;
-                                    for _ in 0..spaces_to_ruler {
-                                        if current_col >= pane.horizontal_offset && current_col < pane.horizontal_offset + visible_width {
-                                            spans.push(Span::styled(" ", Style::default()));
-                                        }
-                                        current_col += 1;
+                                // Only render rulers that are: beyond content, in viewport, and ahead of where we are
+                                if ruler_pos >= start_col && ruler_pos >= pane.horizontal_offset && ruler_pos < pane.horizontal_offset + visible_width {
+                                    // Add spaces from current visual position to ruler position
+                                    while ruler_col < ruler_pos {
+                                        spans.push(Span::styled(" ", Style::default()));
+                                        ruler_col += 1;
                                     }
-                                    if current_col >= pane.horizontal_offset && current_col < pane.horizontal_offset + visible_width {
-                                        spans.push(Span::styled("│", Style::default()
-                                            .fg(hex_to_color(&self.config.editor.column_ruler_color))));
-                                    }
-                                    current_col += 1;
+                                    // Add the ruler
+                                    spans.push(Span::styled("│", Style::default()
+                                        .fg(hex_to_color(&self.config.editor.column_ruler_color))));
+                                    ruler_col += 1;
                                 }
                             }
                         }
@@ -3517,20 +3519,22 @@ impl App {
 
                         // Add column rulers for positions beyond line length (only for actual lines in file)
                         if self.config.editor.show_column_ruler && is_actual_line {
+                            // Start from the max of current_col or horizontal_offset to handle scrolled lines
+                            let start_col = current_col.max(self.horizontal_offset);
+                            let mut ruler_col = start_col;
+
                             for &ruler_pos in &self.config.editor.column_ruler_positions {
-                                if ruler_pos > current_col && ruler_pos >= self.horizontal_offset && ruler_pos < self.horizontal_offset + visible_width {
-                                    let spaces_to_ruler = ruler_pos - current_col - 1;
-                                    for _ in 0..spaces_to_ruler {
-                                        if current_col >= self.horizontal_offset && current_col < self.horizontal_offset + visible_width {
-                                            spans.push(Span::styled(" ", Style::default()));
-                                        }
-                                        current_col += 1;
+                                // Only render rulers that are: beyond content, in viewport, and ahead of where we are
+                                if ruler_pos >= start_col && ruler_pos >= self.horizontal_offset && ruler_pos < self.horizontal_offset + visible_width {
+                                    // Add spaces from current visual position to ruler position
+                                    while ruler_col < ruler_pos {
+                                        spans.push(Span::styled(" ", Style::default()));
+                                        ruler_col += 1;
                                     }
-                                    if current_col >= self.horizontal_offset && current_col < self.horizontal_offset + visible_width {
-                                        spans.push(Span::styled("│", Style::default()
-                                            .fg(hex_to_color(&self.config.editor.column_ruler_color))));
-                                    }
-                                    current_col += 1;
+                                    // Add the ruler
+                                    spans.push(Span::styled("│", Style::default()
+                                        .fg(hex_to_color(&self.config.editor.column_ruler_color))));
+                                    ruler_col += 1;
                                 }
                             }
                         }
