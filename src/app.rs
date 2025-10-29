@@ -43,6 +43,7 @@ pub struct App {
     pub show_sidebar: bool,
     pub viewport_offset: usize,
     pub viewport_height: usize, // Actual terminal height for proper scrolling
+    pub horizontal_offset: usize, // Horizontal scrolling for long lines
     pub command_buffer: String,
     clipboard: Option<Clipboard>,
     search_query: String,
@@ -171,6 +172,7 @@ impl App {
             show_sidebar: true,
             viewport_offset: 0,
             viewport_height: 20, // Will be updated on first draw
+            horizontal_offset: 0,
             command_buffer: String::new(),
             clipboard,
             search_query: String::new(),
@@ -1873,6 +1875,20 @@ impl App {
         }
     }
 
+    fn update_horizontal_offset(&mut self, visible_width: usize) {
+        let cursor_col = self.buffer_manager.current().cursor_position.1;
+        let scroll_margin = 5; // Columns from left/right before scrolling starts
+
+        // Scroll left if cursor is too far left
+        if cursor_col < self.horizontal_offset + scroll_margin {
+            self.horizontal_offset = cursor_col.saturating_sub(scroll_margin);
+        }
+        // Scroll right if cursor is too far right
+        else if cursor_col >= self.horizontal_offset + visible_width.saturating_sub(scroll_margin) {
+            self.horizontal_offset = cursor_col + scroll_margin + 1 - visible_width.min(cursor_col + scroll_margin + 1);
+        }
+    }
+
     fn copy(&mut self) -> Result<()> {
         if let Some(text) = self.buffer_manager.current().get_selected_text() {
             if let Some(ref mut clipboard) = self.clipboard {
@@ -2700,9 +2716,19 @@ impl App {
         // Draw the buffer content with syntax highlighting
         let viewport_height = area.height as usize;
 
+        // Calculate visible width for horizontal scrolling
+        let visible_width = if self.config.editor.show_line_numbers {
+            area.width.saturating_sub(5) as usize
+        } else {
+            area.width as usize
+        };
+
         // Update stored viewport height for scrolling calculations (use the active pane's height)
         if is_active {
             self.viewport_height = viewport_height;
+
+            // Update horizontal scrolling based on cursor position
+            pane.adjust_horizontal_offset(buffer.cursor_position.1, visible_width);
         }
 
         let lines = buffer.get_visible_lines(pane.viewport_offset, viewport_height);
@@ -2902,7 +2928,10 @@ impl App {
                                     }
                                 }
 
-                                spans.push(Span::styled(display_char.to_string(), ratatui_style));
+                                // Only render characters within the visible horizontal viewport
+                                if current_col >= pane.horizontal_offset && current_col < pane.horizontal_offset + visible_width {
+                                    spans.push(Span::styled(display_char.to_string(), ratatui_style));
+                                }
 
                                 // Increment character position
                                 char_pos += 1;
@@ -2916,32 +2945,46 @@ impl App {
                                 } else {
                                     current_col += 1;
                                 }
+
+                                // Early exit if we've rendered past the visible width
+                                if current_col >= pane.horizontal_offset + visible_width {
+                                    break;
+                                }
                             }
                         }
 
                         // Add column rulers for positions beyond line length (only for actual lines in file)
                         if self.config.editor.show_column_ruler && is_actual_line {
                             for &ruler_pos in &self.config.editor.column_ruler_positions {
-                                if ruler_pos > current_col {
+                                if ruler_pos > current_col && ruler_pos >= pane.horizontal_offset && ruler_pos < pane.horizontal_offset + visible_width {
                                     let spaces_to_ruler = ruler_pos - current_col - 1;
                                     for _ in 0..spaces_to_ruler {
-                                        spans.push(Span::styled(" ", Style::default()));
+                                        if current_col >= pane.horizontal_offset && current_col < pane.horizontal_offset + visible_width {
+                                            spans.push(Span::styled(" ", Style::default()));
+                                        }
                                         current_col += 1;
                                     }
-                                    spans.push(Span::styled("│", Style::default()
-                                        .fg(hex_to_color(&self.config.editor.column_ruler_color))));
+                                    if current_col >= pane.horizontal_offset && current_col < pane.horizontal_offset + visible_width {
+                                        spans.push(Span::styled("│", Style::default()
+                                            .fg(hex_to_color(&self.config.editor.column_ruler_color))));
+                                    }
                                     current_col += 1;
                                 }
                             }
                         }
                     } else {
-                        // Fallback to simple rendering
+                        // Fallback to simple rendering - extract visible portion
                         let span_style = if let Some(bg) = line_bg_color {
                             Style::default().bg(bg)
                         } else {
                             Style::default()
                         };
-                        spans.push(ratatui::text::Span::styled(line.to_string(), span_style));
+                        // Extract only the visible portion of the line for horizontal scrolling
+                        let visible_line: String = line.chars()
+                            .skip(pane.horizontal_offset)
+                            .take(visible_width)
+                            .collect();
+                        spans.push(ratatui::text::Span::styled(visible_line, span_style));
                     }
                 }
             } else if buffer.selection.is_some() {
@@ -2970,7 +3013,10 @@ impl App {
 
                     if is_indent_guide {
                         style = style.fg(ratatui::style::Color::Rgb(60, 60, 60));
-                        spans.push(Span::styled("│", style));
+                        // Only render within visible horizontal viewport
+                        if col >= pane.horizontal_offset && col < pane.horizontal_offset + visible_width {
+                            spans.push(Span::styled("│", style));
+                        }
                     } else {
                         if is_selected {
                             style = style.bg(hex_to_color(&theme.ui.selection));
@@ -2985,7 +3031,10 @@ impl App {
                             style = style.fg(ratatui::style::Color::Rgb(80, 80, 80));
                         }
 
-                        spans.push(Span::styled(display_char.to_string(), style));
+                        // Only render within visible horizontal viewport
+                        if col >= pane.horizontal_offset && col < pane.horizontal_offset + visible_width {
+                            spans.push(Span::styled(display_char.to_string(), style));
+                        }
                     }
 
                     // Increment column position, accounting for tab width
@@ -2995,6 +3044,11 @@ impl App {
                         col = next_tab_stop;
                     } else {
                         col += 1;
+                    }
+
+                    // Early exit if we've rendered past the visible width
+                    if col >= pane.horizontal_offset + visible_width {
+                        break;
                     }
                 }
             } else {
@@ -3022,7 +3076,10 @@ impl App {
 
                     if is_indent_guide {
                         style = style.fg(ratatui::style::Color::Rgb(60, 60, 60));
-                        spans.push(Span::styled("│", style));
+                        // Only render within visible horizontal viewport
+                        if col >= pane.horizontal_offset && col < pane.horizontal_offset + visible_width {
+                            spans.push(Span::styled("│", style));
+                        }
                     } else {
                         // Apply diff background if present
                         if let Some(bg) = line_bg_color {
@@ -3035,7 +3092,10 @@ impl App {
                             style = style.fg(ratatui::style::Color::Rgb(80, 80, 80));
                         }
 
-                        spans.push(Span::styled(display_char.to_string(), style));
+                        // Only render within visible horizontal viewport
+                        if col >= pane.horizontal_offset && col < pane.horizontal_offset + visible_width {
+                            spans.push(Span::styled(display_char.to_string(), style));
+                        }
                     }
 
                     // Increment column position, accounting for tab width
@@ -3045,6 +3105,11 @@ impl App {
                         col = next_tab_stop;
                     } else {
                         col += 1;
+                    }
+
+                    // Early exit if we've rendered past the visible width
+                    if col >= pane.horizontal_offset + visible_width {
+                        break;
                     }
                 }
             }
@@ -3060,7 +3125,7 @@ impl App {
         if is_active {
             let cursor_pos = buffer.cursor_position;
             let screen_row = cursor_pos.0.saturating_sub(pane.viewport_offset);
-            let screen_col = cursor_pos.1 + if self.config.editor.show_line_numbers { 5 } else { 0 };
+            let screen_col = cursor_pos.1.saturating_sub(pane.horizontal_offset) + if self.config.editor.show_line_numbers { 5 } else { 0 };
 
             if screen_row < viewport_height {
                 frame.set_cursor_position((area.x + screen_col as u16, area.y + screen_row as u16));
@@ -3150,11 +3215,22 @@ impl App {
     }
 
     fn draw_editor(&mut self, frame: &mut Frame, area: Rect) {
-        let theme = self.theme_manager.get_current_theme();
         let viewport_height = area.height as usize;
 
         // Update stored viewport height for scrolling calculations
         self.viewport_height = viewport_height;
+
+        // Calculate visible width for horizontal scrolling
+        let visible_width = if self.config.editor.show_line_numbers {
+            area.width.saturating_sub(5) as usize
+        } else {
+            area.width as usize
+        };
+
+        // Update horizontal scrolling based on cursor position (before borrowing theme)
+        self.update_horizontal_offset(visible_width);
+
+        let theme = self.theme_manager.get_current_theme();
 
         let lines = self.buffer_manager.current().get_visible_lines(self.viewport_offset, viewport_height);
         let mut paragraph_lines = Vec::new();
@@ -3415,7 +3491,10 @@ impl App {
                                     }
                                 }
 
-                                spans.push(Span::styled(display_char.to_string(), ratatui_style));
+                                // Only render characters within the visible horizontal viewport
+                                if current_col >= self.horizontal_offset && current_col < self.horizontal_offset + visible_width {
+                                    spans.push(Span::styled(display_char.to_string(), ratatui_style));
+                                }
 
                                 // Increment character position
                                 char_pos += 1;
@@ -3428,34 +3507,47 @@ impl App {
                                 } else {
                                     current_col += 1;
                                 }
+
+                                // Early exit if we've rendered past the visible width
+                                if current_col >= self.horizontal_offset + visible_width {
+                                    break;
+                                }
                             }
                         }
 
                         // Add column rulers for positions beyond line length (only for actual lines in file)
                         if self.config.editor.show_column_ruler && is_actual_line {
                             for &ruler_pos in &self.config.editor.column_ruler_positions {
-                                if ruler_pos > current_col {
+                                if ruler_pos > current_col && ruler_pos >= self.horizontal_offset && ruler_pos < self.horizontal_offset + visible_width {
                                     let spaces_to_ruler = ruler_pos - current_col - 1;
                                     for _ in 0..spaces_to_ruler {
-                                        spans.push(Span::styled(" ", Style::default()));
+                                        if current_col >= self.horizontal_offset && current_col < self.horizontal_offset + visible_width {
+                                            spans.push(Span::styled(" ", Style::default()));
+                                        }
                                         current_col += 1;
                                     }
-                                    spans.push(Span::styled("│", Style::default()
-                                        .fg(hex_to_color(&self.config.editor.column_ruler_color))));
+                                    if current_col >= self.horizontal_offset && current_col < self.horizontal_offset + visible_width {
+                                        spans.push(Span::styled("│", Style::default()
+                                            .fg(hex_to_color(&self.config.editor.column_ruler_color))));
+                                    }
                                     current_col += 1;
                                 }
                             }
                         }
                     } else {
-                        // Fallback if highlighting fails
+                        // Fallback if highlighting fails - extract visible portion
+                        let visible_line: String = line.chars()
+                            .skip(self.horizontal_offset)
+                            .take(visible_width)
+                            .collect();
                         if is_current_line && self.config.editor.highlight_current_line {
                             spans.push(Span::styled(
-                                line.clone(),
+                                visible_line,
                                 get_ui_style(theme, "current_line"),
                             ));
                         } else {
                             spans.push(Span::styled(
-                                line.clone(),
+                                visible_line,
                                 get_ui_style(theme, "foreground"),
                             ));
                         }
@@ -3509,7 +3601,10 @@ impl App {
 
                         if is_indent_guide {
                             style = style.fg(ratatui::style::Color::Rgb(60, 60, 60));
-                            spans.push(Span::styled("│", style));
+                            // Only render within visible horizontal viewport
+                            if col >= self.horizontal_offset && col < self.horizontal_offset + visible_width {
+                                spans.push(Span::styled("│", style));
+                            }
                         } else {
                             if is_bracket && self.config.editor.rainbow_brackets {
                                 // Get bracket depth for rainbow coloring (from cache)
@@ -3533,7 +3628,10 @@ impl App {
                                 style = style.fg(ratatui::style::Color::Rgb(80, 80, 80));
                             }
 
-                            spans.push(Span::styled(display_char.to_string(), style));
+                            // Only render within visible horizontal viewport
+                            if col >= self.horizontal_offset && col < self.horizontal_offset + visible_width {
+                                spans.push(Span::styled(display_char.to_string(), style));
+                            }
                         }
 
                         // Increment column position, accounting for tab width
@@ -3543,6 +3641,11 @@ impl App {
                             col = next_tab_stop;
                         } else {
                             col += 1;
+                        }
+
+                        // Early exit if we've rendered past the visible width
+                        if col >= self.horizontal_offset + visible_width {
+                            break;
                         }
                     }
                 }
@@ -3563,9 +3666,9 @@ impl App {
 
         if self.mode == Mode::Insert || self.mode == Mode::Normal {
             let cursor_col = if self.config.editor.show_line_numbers {
-                self.buffer_manager.current().cursor_position.1 + 5
+                self.buffer_manager.current().cursor_position.1.saturating_sub(self.horizontal_offset) + 5
             } else {
-                self.buffer_manager.current().cursor_position.1
+                self.buffer_manager.current().cursor_position.1.saturating_sub(self.horizontal_offset)
             };
 
             let cursor_row = self.buffer_manager.current().cursor_position.0 - self.viewport_offset;

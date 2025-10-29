@@ -9,6 +9,7 @@ pub enum SplitDirection {
 pub struct Pane {
     pub buffer_index: usize,  // Index into BufferManager's buffers
     pub viewport_offset: usize,
+    pub horizontal_offset: usize, // Horizontal scrolling for long lines
     pub cursor_x: usize,
     pub cursor_y: usize,
     pub x: u16,
@@ -22,6 +23,7 @@ impl Pane {
         Self {
             buffer_index,
             viewport_offset: 0,
+            horizontal_offset: 0,
             cursor_x: 0,
             cursor_y: 0,
             x,
@@ -45,6 +47,19 @@ impl Pane {
             self.viewport_offset = cursor_row;
         } else if cursor_row >= self.viewport_offset + visible_lines {
             self.viewport_offset = cursor_row.saturating_sub(visible_lines - 1);
+        }
+    }
+
+    pub fn adjust_horizontal_offset(&mut self, cursor_col: usize, visible_width: usize) {
+        let scroll_margin = 5; // Columns from left/right before scrolling starts
+
+        // Scroll left if cursor is too far left
+        if cursor_col < self.horizontal_offset + scroll_margin {
+            self.horizontal_offset = cursor_col.saturating_sub(scroll_margin);
+        }
+        // Scroll right if cursor is too far right
+        else if cursor_col >= self.horizontal_offset + visible_width.saturating_sub(scroll_margin) {
+            self.horizontal_offset = cursor_col + scroll_margin + 1 - visible_width.min(cursor_col + scroll_margin + 1);
         }
     }
 }
