@@ -1,0 +1,3 @@
+[submodule "rust-tui-helpers"]
+	path = rust-tui-helpers
+	url = git@github.com:nullmedium/rust-tui-helpers.git
